@@ -1,0 +1,186 @@
+.graph {
+  position: absolute;
+  inset: 0;
+}
+
+.graph .react-flow {
+  background:
+    radial-gradient(circle, var(--grid-dot) 1px, transparent 1px) 0 0 / 17.6px 17.6px,
+    var(--bg);
+}
+
+.graph-toolbar {
+  position: absolute;
+  top: 9.6px;
+  left: 9.6px;
+  right: 9.6px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6.4px;
+  pointer-events: none;
+}
+
+.graph-toolbar > * {
+  pointer-events: auto;
+}
+
+.selection-count {
+  padding: 2.4px 8px;
+  border: 1px solid var(--select-line);
+  border-radius: var(--radius);
+  background: var(--select-soft);
+  color: var(--select);
+  font-size: 11.2px;
+  font-weight: 600;
+}
+
+.graph-error {
+  position: absolute;
+  top: 38.4px;
+  left: 9.6px;
+  z-index: 10;
+  max-width: min(368px, calc(100% - 19.2px));
+}
+
+.box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 0 9.6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-soft);
+  font-family: var(--serif);
+  font-size: 10.8px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    border-color 0.12s,
+    background 0.12s;
+}
+
+.box:hover {
+  border-color: var(--text-soft);
+}
+
+.box-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.box-root {
+  background: var(--panel);
+  color: var(--text);
+  font-weight: 650;
+  font-size: 11.2px;
+}
+
+.box-chain {
+  border-color: var(--accent-line);
+  color: var(--text);
+}
+
+.box-current {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.box-root.box-current {
+  background: var(--accent);
+}
+
+.box-selected {
+  border-color: var(--select);
+  box-shadow: 0 0 0 1.6px var(--select-ring);
+}
+
+.box-selected:not(.box-current) {
+  background: var(--select-soft);
+  color: var(--select);
+}
+
+.box-drop {
+  border-color: var(--accent);
+  border-style: dashed;
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 2.4px var(--drop-ring);
+}
+
+.react-flow__node.dragging .box {
+  box-shadow: var(--shadow-drag);
+  opacity: 0.92;
+}
+
+.react-flow__handle.box-handle {
+  opacity: 0;
+  pointer-events: none;
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+}
+
+.react-flow__edge-path {
+  stroke: var(--line-strong);
+  stroke-width: 1.2;
+}
+
+.react-flow__edge.edge-chain .react-flow__edge-path {
+  stroke: var(--accent);
+  stroke-width: 1.6;
+}
+
+.react-flow__controls {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.react-flow__controls-button {
+  width: 22.4px;
+  height: 22.4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  cursor: pointer;
+  padding: 0;
+}
+
+.react-flow__controls-button:last-child {
+  border-bottom: 0;
+}
+
+.react-flow__controls-button:hover {
+  background: var(--panel);
+}
+
+.react-flow__controls-button svg {
+  width: 8.8px;
+  height: 8.8px;
+  fill: var(--text-soft);
+}
+
+.react-flow__attribution {
+  background: transparent;
+  font-size: 8px;
+  opacity: 0.6;
+}
+
+.react-flow__attribution a {
+  color: var(--muted);
+}

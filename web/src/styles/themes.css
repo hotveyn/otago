@@ -1,0 +1,167 @@
+/*
+ * Color themes. Every color in the app is a token defined here; stylesheets use only var(--token).
+ * `data-theme` on <html> holds the resolved theme id (set by the inline script in index.html and
+ * by `useTheme`). `:root` without the attribute falls back to Standard.
+ *
+ * Adding a theme = add one block here with every token + its id in `THEMES` in
+ * `src/lib/theme.ts` + in the inline script in `index.html`.
+ */
+
+:root {
+  --radius: 2.4px;
+  --serif: "Source Serif 4 Variable", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+:root,
+:root[data-theme="standard"] {
+  --bg: #fbfaf6;
+  --surface: #ffffff;
+  --panel: #f5f3ec;
+  --line: #e4e0d5;
+  --line-strong: #cfc9ba;
+  --text: #22201c;
+  --text-soft: #4a463e;
+  --muted: #837d70;
+  --accent: #2c4f7c;
+  --accent-soft: #e8eef6;
+  --accent-line: #9fb4d0;
+  --select: #8a5a12;
+  --select-soft: #fbf1dc;
+  --danger: #a3372b;
+  --danger-soft: #fbecea;
+  --hit: #fff3c4;
+  --on-accent: #ffffff;
+  --accent-hover: #233f64;
+  --tint-1: rgba(0, 0, 0, 0.035);
+  --tint-2: rgba(0, 0, 0, 0.04);
+  --tint-3: rgba(0, 0, 0, 0.05);
+  --danger-line: #e0b7b1;
+  --danger-note-line: #e6c1bb;
+  --danger-ink: #6f2218;
+  --text-disabled: #b7b1a4;
+  --line-no: #b3ad9f;
+  --hit-bar: #d4a72c;
+  --hit-ink: #8a6d1d;
+  --backdrop: rgba(34, 32, 28, 0.28);
+  --shadow-dialog: 0 9.6px 32px rgba(34, 32, 28, 0.14);
+  --shadow-panel: -8px 0 24px rgba(34, 32, 28, 0.06);
+  --shadow-drag: 0 4.8px 14.4px rgba(34, 32, 28, 0.15);
+  --grid-dot: #e6e2d7;
+  --select-line: #e3cfa6;
+  --select-ring: #f0d9a8;
+  --drop-ring: rgba(44, 79, 124, 0.15);
+  --code-bg: #fcfbf8;
+  --cite-url-line: #c9c3b5;
+  --hl-comment: #8f897b;
+  --hl-keyword: #7a3e9d;
+  --hl-string: #3d7a3a;
+  --hl-number: #b35a1f;
+  --hl-title: #2c4f7c;
+  --hl-attr: #8a5a12;
+  --hl-meta: #6b6558;
+  --image-bg: #ffffff;
+  color-scheme: light;
+}
+
+/* Dark: warm charcoal, the sibling of Standard's warm paper. */
+:root[data-theme="dark"] {
+  --bg: #1b1a18;
+  --surface: #242320;
+  --panel: #171614;
+  --line: #34322d;
+  --line-strong: #4a473f;
+  --text: #e8e4da;
+  --text-soft: #c4bfb3;
+  --muted: #968f82;
+  --accent: #8fb2e0;
+  --accent-soft: #1f2a3a;
+  --accent-line: #3f5878;
+  --select: #e0b064;
+  --select-soft: #33291a;
+  --danger: #ef8a7c;
+  --danger-soft: #3a211d;
+  --hit: #3d3418;
+  --on-accent: #111a26;
+  --accent-hover: #a9c4ea;
+  --tint-1: rgba(255, 255, 255, 0.04);
+  --tint-2: rgba(255, 255, 255, 0.05);
+  --tint-3: rgba(255, 255, 255, 0.07);
+  --danger-line: #6e3a33;
+  --danger-note-line: #5e332d;
+  --danger-ink: #f4b4aa;
+  --text-disabled: #5f5a50;
+  --line-no: #6a655a;
+  --hit-bar: #d4a72c;
+  --hit-ink: #e0c267;
+  --backdrop: rgba(0, 0, 0, 0.55);
+  --shadow-dialog: 0 9.6px 32px rgba(0, 0, 0, 0.5);
+  --shadow-panel: -8px 0 24px rgba(0, 0, 0, 0.35);
+  --shadow-drag: 0 4.8px 14.4px rgba(0, 0, 0, 0.5);
+  --grid-dot: #2e2c28;
+  --select-line: #5e4a28;
+  --select-ring: #6b5226;
+  --drop-ring: rgba(143, 178, 224, 0.2);
+  --code-bg: #1f1e1b;
+  --cite-url-line: #4a473f;
+  --hl-comment: #8f897c;
+  --hl-keyword: #c9a2e6;
+  --hl-string: #9ccc8a;
+  --hl-number: #e6a06a;
+  --hl-title: #8fb2e0;
+  --hl-attr: #e0b064;
+  --hl-meta: #a8a295;
+  --image-bg: #ffffff;
+  color-scheme: dark;
+}
+
+/* Cool light: blue-white backgrounds, slate text; select is violet, hits are pale cyan. */
+:root[data-theme="cool"] {
+  --bg: #f6f8fb;
+  --surface: #ffffff;
+  --panel: #edf1f6;
+  --line: #dde3eb;
+  --line-strong: #c3ccd8;
+  --text: #1b2330;
+  --text-soft: #3b4658;
+  --muted: #5f6b7e;
+  --accent: #2b5797;
+  --accent-soft: #e6eef9;
+  --accent-line: #9db5d9;
+  --select: #5b3fa8;
+  --select-soft: #efeafb;
+  --danger: #b3261e;
+  --danger-soft: #fcebea;
+  --hit: #dcf1f6;
+  --on-accent: #ffffff;
+  --accent-hover: #1f4478;
+  --tint-1: rgba(15, 30, 60, 0.035);
+  --tint-2: rgba(15, 30, 60, 0.04);
+  --tint-3: rgba(15, 30, 60, 0.05);
+  --danger-line: #e7b8b4;
+  --danger-note-line: #ecc5c2;
+  --danger-ink: #7a1d17;
+  --text-disabled: #aab3c0;
+  --line-no: #a4adba;
+  --hit-bar: #3a9fb5;
+  --hit-ink: #1f6576;
+  --backdrop: rgba(20, 30, 50, 0.3);
+  --shadow-dialog: 0 9.6px 32px rgba(20, 30, 50, 0.14);
+  --shadow-panel: -8px 0 24px rgba(20, 30, 50, 0.06);
+  --shadow-drag: 0 4.8px 14.4px rgba(20, 30, 50, 0.15);
+  --grid-dot: #dfe4ec;
+  --select-line: #cfc3ee;
+  --select-ring: #d9cff3;
+  --drop-ring: rgba(43, 87, 151, 0.15);
+  --code-bg: #f9fafc;
+  --cite-url-line: #c3ccd8;
+  --hl-comment: #65707f;
+  --hl-keyword: #6f3fb0;
+  --hl-string: #2f7a4f;
+  --hl-number: #a4511f;
+  --hl-title: #2b5797;
+  --hl-attr: #0f6e7a;
+  --hl-meta: #5d687a;
+  --image-bg: #ffffff;
+  color-scheme: light;
+}
