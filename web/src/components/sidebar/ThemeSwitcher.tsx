@@ -7,8 +7,8 @@ import { useTheme } from '../../lib/use-theme';
 const OPTIONS = [
   { id: 'auto', short: 'theme.auto', label: 'theme.autoTitle' },
   { id: 'standard', short: 'theme.standard', label: 'theme.standard' },
-  { id: 'dark', short: 'theme.dark', label: 'theme.dark' },
   { id: 'cool', short: 'theme.cool', label: 'theme.coolTitle' },
+  { id: 'dark', short: 'theme.dark', label: 'theme.dark' },
 ] as const satisfies ReadonlyArray<{ id: ThemePref; short: string; label: string }>;
 
 /**
