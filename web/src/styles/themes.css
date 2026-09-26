@@ -1,10 +1,12 @@
 /*
  * Color themes. Every color in the app is a token defined here; stylesheets use only var(--token).
  * `data-theme` on <html> holds the resolved theme id (set by the inline script in index.html and
- * by `useTheme`). `:root` without the attribute falls back to Standard.
+ * by `useTheme`). `:root` without the attribute falls back to Standard. `.theme-swatch` carries the
+ * same attribute so the theme picker's swatches are drawn with each theme's real tokens.
  *
  * Adding a theme = add one block here with every token + its id in `THEMES` in
- * `src/lib/theme.ts` + in the inline script in `index.html`.
+ * `src/lib/theme.ts` + in the inline script in `index.html` + its labels in ThemeSwitcher
+ * and the `sidebar:theme.*` translations.
  */
 
 :root {
@@ -14,7 +16,8 @@
 }
 
 :root,
-:root[data-theme="standard"] {
+:root[data-theme="standard"],
+.theme-swatch[data-theme="standard"] {
   --bg: #fbfaf6;
   --surface: #ffffff;
   --panel: #f5f3ec;
@@ -65,7 +68,8 @@
 }
 
 /* Dark: warm charcoal, the sibling of Standard's warm paper. */
-:root[data-theme="dark"] {
+:root[data-theme="dark"],
+.theme-swatch[data-theme="dark"] {
   --bg: #1b1a18;
   --surface: #242320;
   --panel: #171614;
@@ -116,7 +120,8 @@
 }
 
 /* Cool light: blue-white backgrounds, slate text; select is violet, hits are pale cyan. */
-:root[data-theme="cool"] {
+:root[data-theme="cool"],
+.theme-swatch[data-theme="cool"] {
   --bg: #f6f8fb;
   --surface: #ffffff;
   --panel: #edf1f6;

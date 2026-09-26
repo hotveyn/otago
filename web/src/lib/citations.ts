@@ -1,3 +1,4 @@
+import { i18n } from '../i18n';
 export type CitationTarget =
   | { kind: 'source'; file: string; start?: number; end?: number }
   | { kind: 'url'; url: string; title?: string }
@@ -119,8 +120,8 @@ export function describeTarget(target: CitationTarget): string {
       return target.start === undefined
         ? target.file
         : target.end && target.end !== target.start
-          ? `${target.file} · lines ${target.start}–${target.end}`
-          : `${target.file} · line ${target.start}`;
+          ? `${target.file} · ${i18n.t('lines', { start: target.start, end: target.end })}`
+          : `${target.file} · ${i18n.t('line', { start: target.start })}`;
     case 'url':
       return target.title ?? target.url;
     case 'text':

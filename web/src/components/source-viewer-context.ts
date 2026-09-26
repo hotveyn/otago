@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import type { AttachmentInfo } from '../api/types';
+import type { AttachmentInfo, FileFolder } from '../api/types';
 
 export interface SourceView {
   file: string;
@@ -17,6 +17,8 @@ export interface AttachmentView {
   attachment: AttachmentInfo;
   /** Show a table (or any file) as plain text, e.g. after a CSV parse failure. */
   asText?: boolean;
+  /** Node folder the file lives in; defaults to agent `attachments`. */
+  folder?: FileFolder;
 }
 
 export const AttachmentViewerContext = createContext<(view: AttachmentView) => void>(() => {});

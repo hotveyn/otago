@@ -1,13 +1,15 @@
-import type { AttachmentStaging, ChainNode } from '../storage/index.js';
+import type { AttachmentStaging, ChainNode, PromptFile } from '../storage/index.js';
 
-export type { AttachmentStaging };
+export type { AttachmentStaging, PromptFile };
 
 export interface AskInput {
   /** Absolute path of the tree folder; the agent runs with it as `cwd`. */
   treeDir: string;
   instructions: string;
-  chain: Pick<ChainNode, 'id' | 'user' | 'assistant' | 'attachments'>[];
+  chain: Pick<ChainNode, 'id' | 'user' | 'assistant' | 'attachments' | 'files'>[];
   question: string;
+  /** Readable files of the current message, relative to `treeDir` (`[]` when none). */
+  files: PromptFile[];
   model: string;
   signal: AbortSignal;
   /** Where the answer's attachments go (the `save_attachment` tool writes here). */

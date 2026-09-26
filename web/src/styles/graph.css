@@ -57,21 +57,37 @@
   color: var(--text-soft);
   font-family: var(--serif);
   font-size: 10.8px;
-  line-height: 1;
+  /* Must match LINE_HEIGHT in layout.ts. */
+  line-height: 13px;
+  text-align: center;
   cursor: pointer;
   transition:
-    border-color 0.12s,
-    background 0.12s;
+    border-color 0.18s,
+    background 0.18s,
+    color 0.18s,
+    box-shadow 0.18s,
+    transform 0.18s;
+  /* Entrance: each level of the tree shows up a beat after its parent. */
+  animation: box-enter 0.32s cubic-bezier(0.2, 0.8, 0.3, 1.2) backwards;
+  animation-delay: min(calc(var(--depth, 0) * 50ms), 300ms);
 }
 
 .box:hover {
   border-color: var(--text-soft);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.08);
+}
+
+.box:active {
+  transform: translateY(0) scale(0.98);
 }
 
 .box-label {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .box-root {
@@ -91,6 +107,12 @@
   background: var(--accent);
   color: var(--on-accent);
   font-weight: 600;
+  animation: box-pop 0.34s cubic-bezier(0.2, 0.8, 0.3, 1.3);
+}
+
+/* The node being answered breathes while the agent works. */
+.box-current.box-busy {
+  animation: box-busy 1.6s ease-in-out infinite;
 }
 
 .box-root.box-current {
@@ -114,6 +136,23 @@
   box-shadow: 0 0 0 2.4px var(--drop-ring);
 }
 
+/* Placeholder for the next answer under the current node. */
+.box-ghost {
+  border-style: dashed;
+  border-color: var(--accent-line);
+  background: transparent;
+  color: var(--muted);
+  opacity: 0.7;
+  cursor: default;
+}
+
+.box-ghost:hover,
+.box-ghost:active {
+  border-color: var(--accent-line);
+  transform: none;
+  box-shadow: none;
+}
+
 .react-flow__node.dragging .box {
   box-shadow: var(--shadow-drag);
   opacity: 0.92;
@@ -132,11 +171,24 @@
 .react-flow__edge-path {
   stroke: var(--line-strong);
   stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition:
+    stroke 0.25s,
+    stroke-width 0.25s;
+  /* Lines fade in with the boxes they lead to. */
+  animation: edge-fade 0.32s ease-out backwards;
+  animation-delay: min(calc(var(--depth, 0) * 50ms), 300ms);
 }
 
 .react-flow__edge.edge-chain .react-flow__edge-path {
   stroke: var(--accent);
   stroke-width: 1.6;
+}
+
+.react-flow__edge.edge-ghost .react-flow__edge-path {
+  stroke: var(--accent-line);
+  stroke-dasharray: 3 3;
 }
 
 .react-flow__controls {
@@ -183,4 +235,49 @@
 
 .react-flow__attribution a {
   color: var(--muted);
+}
+
+@keyframes box-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.9);
+  }
+}
+
+@keyframes box-pop {
+  40% {
+    transform: scale(1.06);
+  }
+}
+
+@keyframes box-busy {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--drop-ring);
+  }
+  50% {
+    box-shadow: 0 0 0 4px var(--drop-ring);
+  }
+}
+
+@keyframes edge-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .box,
+  .box-current,
+  .box-current.box-busy,
+  .react-flow__edge-path,
+  .react-flow__edge.animated path {
+    animation: none;
+    transition: none;
+  }
+
+  .box:hover,
+  .box:active {
+    transform: none;
+  }
 }

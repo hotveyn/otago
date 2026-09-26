@@ -10,7 +10,7 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     // Vitest stubs CSS to '' by default; theme.test.ts reads themes.css?raw.
-    test: { css: { include: [/themes\.css/] } },
+    test: { css: { include: [/themes\.css/] }, setupFiles: ['./src/test-setup.ts'] },
     server: {
       host: '127.0.0.1',
       port: 5173,

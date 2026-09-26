@@ -1,6 +1,8 @@
 /** Attachment constants (mirrored from the rich-answers contract) and pure helpers. */
+
 import { attachmentUrl } from '../api/client';
 import type { AttachmentEvent, AttachmentInfo, AttachmentOrigin } from '../api/types';
+import { i18n } from '../i18n';
 
 /** Answer text references an attachment of the same node as `attachments/<name>`. */
 export const ATTACHMENT_LINK_PREFIX = 'attachments/';
@@ -110,7 +112,7 @@ export function resolveAttachment(scope: AttachmentScopeValue, name: string): Re
   if (staged?.attachment) return { state: 'staged', info: staged.attachment };
   const byRequest = items.find((item) => item.requestedName === name);
   if (byRequest?.status === 'failed')
-    return { state: 'failed', message: byRequest.message ?? 'Not saved' };
+    return { state: 'failed', message: byRequest.message ?? i18n.t('chat:attachments.failed') };
   if (scope.unsaved) return { state: 'missing' };
   // The agent may reference a file before its tool call finishes: stay neutral while streaming.
   return { state: 'saving' };

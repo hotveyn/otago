@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
-import { attachmentUrl } from '../api/client';
+import { useTranslation } from 'react-i18next';
+import { nodeFileUrl } from '../api/client';
 import { useAttachmentBlob, useAttachmentText } from '../api/queries';
 import { extensionOf, formatBytes, PREVIEW_LIMITS } from '../lib/attachments';
 import { parseCsv } from '../lib/csv';
@@ -59,15 +60,16 @@ function CodeText({ text, extension }: { text: string; extension: string }) {
 }
 
 function TextBody({ view, rendered }: { view: AttachmentView; rendered: boolean }) {
-  const { treeId, nodeId, attachment } = view;
-  const text = useAttachmentText(treeId, nodeId, attachment.name, attachment.size, true);
+  const { t } = useTranslation();
+  const { treeId, nodeId, attachment, folder } = view;
+  const text = useAttachmentText(treeId, nodeId, attachment.name, attachment.size, true, folder);
   if (text.error)
     return (
       <div className="viewer-pad">
         <ErrorNote error={text.error} />
       </div>
     );
-  if (text.data === undefined) return <p className="viewer-pad muted">Loading…</p>;
+  if (text.data === undefined) return <p className="viewer-pad muted">{t('loading')}</p>;
   if (rendered)
     return (
       <div className="viewer-pad">
@@ -78,8 +80,9 @@ function TextBody({ view, rendered }: { view: AttachmentView; rendered: boolean 
 }
 
 function TableBody({ view, onAsText }: { view: AttachmentView; onAsText: () => void }) {
-  const { treeId, nodeId, attachment } = view;
-  const text = useAttachmentText(treeId, nodeId, attachment.name, attachment.size, true);
+  const { t } = useTranslation(['viewer', 'common']);
+  const { treeId, nodeId, attachment, folder = 'attachments' } = view;
+  const text = useAttachmentText(treeId, nodeId, attachment.name, attachment.size, true, folder);
   const parsed = useMemo(
     () => (text.data === undefined ? null : parseCsv(text.data, delimiterFor(attachment.name))),
     [text.data, attachment.name],
@@ -90,13 +93,13 @@ function TableBody({ view, onAsText }: { view: AttachmentView; onAsText: () => v
         <ErrorNote error={text.error} />
       </div>
     );
-  if (text.data === undefined) return <p className="viewer-pad muted">Loading…</p>;
+  if (text.data === undefined) return <p className="viewer-pad muted">{t('common:loading')}</p>;
   if (!parsed)
     return (
       <p className="viewer-pad muted">
-        Could not parse;{' '}
+        {t('couldNotParse')}{' '}
         <button type="button" className="link-btn" onClick={onAsText}>
-          Preview as text
+          {t('previewAsText')}
         </button>
       </p>
     );
@@ -106,7 +109,7 @@ function TableBody({ view, onAsText }: { view: AttachmentView; onAsText: () => v
         header={parsed.header}
         rows={parsed.rows}
         baseName={baseNameOf(attachment.name)}
-        fullFileUrl={attachmentUrl(treeId, nodeId, attachment.name, true)}
+        fullFileUrl={nodeFileUrl(folder, treeId, nodeId, attachment.name, true)}
       />
     </div>
   );
@@ -114,8 +117,9 @@ function TableBody({ view, onAsText }: { view: AttachmentView; onAsText: () => v
 
 /** PDF through a blob: URL, since the attachment route's CSP sandbox blocks the PDF viewer. */
 function PdfBody({ view }: { view: AttachmentView }) {
-  const { treeId, nodeId, attachment } = view;
-  const blob = useAttachmentBlob(treeId, nodeId, attachment.name, attachment.size);
+  const { treeId, nodeId, attachment, folder } = view;
+  const { t } = useTranslation();
+  const blob = useAttachmentBlob(treeId, nodeId, attachment.name, attachment.size, folder);
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
     if (!blob.data) return;
@@ -133,16 +137,17 @@ function PdfBody({ view }: { view: AttachmentView }) {
         <ErrorNote error={blob.error} />
       </div>
     );
-  if (!url) return <p className="viewer-pad muted">Loading…</p>;
+  if (!url) return <p className="viewer-pad muted">{t('loading')}</p>;
   return <iframe className="viewer-pdf" title={attachment.name} src={url} />;
 }
 
 function Unavailable({ download, reason }: { download: string; reason: string }) {
+  const { t } = useTranslation();
   return (
     <div className="viewer-pad">
       <p className="muted">{reason}</p>
       <a className="btn btn-sm" href={download} download>
-        Download
+        {t('download')}
       </a>
     </div>
   );
@@ -155,11 +160,13 @@ interface AttachmentViewerProps {
 
 /** Side panel for one attachment: text/code, table, image/SVG, PDF, or metadata + Download. */
 export function AttachmentViewer({ view, onClose }: AttachmentViewerProps) {
+  const { t } = useTranslation(['viewer', 'common']);
   const { treeId, nodeId, attachment } = view;
+  const folder = view.folder ?? 'attachments';
   const [asText, setAsText] = useState(view.asText ?? false);
   const [rendered, setRendered] = useState(false);
-  const inline = attachmentUrl(treeId, nodeId, attachment.name);
-  const download = attachmentUrl(treeId, nodeId, attachment.name, true);
+  const inline = nodeFileUrl(folder, treeId, nodeId, attachment.name);
+  const download = nodeFileUrl(folder, treeId, nodeId, attachment.name, true);
   const isMarkdown = extensionOf(attachment.name) === 'md';
   const kind = asText ? 'text' : attachment.kind;
 
@@ -176,7 +183,7 @@ export function AttachmentViewer({ view, onClose }: AttachmentViewerProps) {
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const tooLarge = 'Too large to preview.';
+  const tooLarge = t('tooLarge');
   let body: ReactNode;
   switch (kind) {
     case 'text':
@@ -215,11 +222,17 @@ export function AttachmentViewer({ view, onClose }: AttachmentViewerProps) {
         );
       break;
     default:
-      body = <Unavailable download={download} reason="No preview for this file type." />;
+      body = <Unavailable download={download} reason={t('noPreview')} />;
   }
 
   return (
-    <div className="viewer" role="dialog" aria-label={`Attachment ${attachment.name}`}>
+    <div
+      className="viewer"
+      role="dialog"
+      aria-label={t(folder === 'files' ? 'fileLabel' : 'attachmentLabel', {
+        name: attachment.name,
+      })}
+    >
       <header className="viewer-header">
         <KindBadge name={attachment.name} />
         <span className="viewer-title truncate">{attachment.name}</span>
@@ -231,16 +244,21 @@ export function AttachmentViewer({ view, onClose }: AttachmentViewerProps) {
             className="btn btn-ghost btn-sm"
             onClick={() => setRendered(!rendered)}
           >
-            {rendered ? 'Lines' : 'Rendered'}
+            {rendered ? t('lines') : t('rendered')}
           </button>
         )}
         <a className="btn btn-ghost btn-sm" href={inline} target="_blank" rel="noreferrer">
-          Open ↗
+          {t('open')}
         </a>
         <a className="btn btn-ghost btn-sm" href={download} download={attachment.name}>
-          Download
+          {t('common:download')}
         </a>
-        <button type="button" className="icon-btn" aria-label="Close attachment" onClick={onClose}>
+        <button
+          type="button"
+          className="icon-btn"
+          aria-label={t('closeAttachment')}
+          onClick={onClose}
+        >
           ×
         </button>
       </header>

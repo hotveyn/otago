@@ -13,7 +13,7 @@ export const nodeRoutes: FastifyPluginAsyncZod<RouteDeps> = async (app, { treesD
     async (request) => {
       const { tree } = request.params;
       const dir = await existingTreeDir(treesDir, tree);
-      return locks.withLock(tree, async () => {
+      return locks.withExclusive(tree, async () => {
         await deleteNodes(dir, request.body.ids);
         return { nodes: await readHierarchy(dir) };
       });
@@ -26,7 +26,7 @@ export const nodeRoutes: FastifyPluginAsyncZod<RouteDeps> = async (app, { treesD
     async (request) => {
       const { tree } = request.params;
       const dir = await existingTreeDir(treesDir, tree);
-      return locks.withLock(tree, async () => {
+      return locks.withExclusive(tree, async () => {
         const moved = await moveNodes(dir, request.body.ids, request.body.targetParentId);
         return { moved, nodes: await readHierarchy(dir) };
       });

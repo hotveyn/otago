@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { sourceUrl } from '../api/client';
 import { useSourceText } from '../api/queries';
 import { bookOfText, formatLabel, viewableFile } from '../lib/sources';
@@ -13,6 +14,7 @@ interface SourceViewerProps {
 }
 
 export function SourceViewer({ treeId, view, onClose }: SourceViewerProps) {
+  const { t } = useTranslation(['viewer', 'common']);
   // A citation to the book file itself still opens its extracted text.
   const file = viewableFile(view.file);
   const book = bookOfText(file);
@@ -46,13 +48,13 @@ export function SourceViewer({ treeId, view, onClose }: SourceViewerProps) {
   const lines = text.data?.replace(/\n$/, '').split('\n') ?? [];
 
   return (
-    <div className="viewer" role="dialog" aria-label={`Source ${book ?? file}`}>
+    <div className="viewer" role="dialog" aria-label={t('sourceLabel', { name: book ?? file })}>
       <header className="viewer-header">
         <span className="file-badge">{formatLabel(file)}</span>
         <span className="viewer-title truncate">{book ?? file}</span>
         {start !== undefined && (
           <span className="cite-lines">
-            {end !== start ? `lines ${start}–${end}` : `line ${start}`}
+            {end !== start ? t('common:lines', { start, end }) : t('common:line', { start })}
           </span>
         )}
         <span className="spacer" />
@@ -62,12 +64,12 @@ export function SourceViewer({ treeId, view, onClose }: SourceViewerProps) {
             className="btn btn-ghost btn-sm"
             onClick={() => setRendered(!rendered)}
           >
-            {rendered ? 'Lines' : 'Rendered'}
+            {rendered ? t('lines') : t('rendered')}
           </button>
         )}
         {book && (
           <a className="btn btn-ghost btn-sm" href={sourceUrl(treeId, book)} download={book}>
-            Book ↓
+            {t('book')}
           </a>
         )}
         <a
@@ -76,9 +78,9 @@ export function SourceViewer({ treeId, view, onClose }: SourceViewerProps) {
           target="_blank"
           rel="noreferrer"
         >
-          Raw ↗
+          {t('raw')}
         </a>
-        <button type="button" className="icon-btn" aria-label="Close source" onClick={onClose}>
+        <button type="button" className="icon-btn" aria-label={t('closeSource')} onClick={onClose}>
           ×
         </button>
       </header>
@@ -90,7 +92,7 @@ export function SourceViewer({ treeId, view, onClose }: SourceViewerProps) {
             <ErrorNote error={text.error} />
           </div>
         ) : text.data === undefined ? (
-          <p className="viewer-pad muted">Loading…</p>
+          <p className="viewer-pad muted">{t('common:loading')}</p>
         ) : rendered ? (
           <div className="viewer-pad">
             <Markdown text={text.data} plain />

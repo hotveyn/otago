@@ -1,4 +1,5 @@
 import { type ReactNode, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { PREVIEW_LIMITS } from '../../lib/attachments';
 import { SortButton, TableBar, useTableView } from './table-controls';
 
@@ -24,6 +25,7 @@ export function DataTable({
   fullFileUrl,
   extraActions,
 }: DataTableProps) {
+  const { t } = useTranslation('chat');
   const limited = useMemo(() => rows.slice(0, PREVIEW_LIMITS.tableRows), [rows]);
   const truncatedFrom = rows.length > limited.length ? rows.length : null;
   const { order, query, setQuery, cycle, ariaSort } = useTableView(limited);
@@ -77,17 +79,17 @@ export function DataTable({
               className="btn btn-ghost btn-sm"
               onClick={() => setExpanded(true)}
             >
-              Show all {order.length} rows
+              {t('table.showAll', { count: order.length })}
             </button>
           )}
           {truncatedFrom !== null && (
             <span>
-              First {limited.length} of {truncatedFrom} rows
+              {t('table.firstRows', { shown: limited.length, count: truncatedFrom })}
               {fullFileUrl && (
                 <>
                   {' · '}
                   <a href={fullFileUrl} download>
-                    Download full file
+                    {t('table.downloadFull')}
                   </a>
                 </>
               )}

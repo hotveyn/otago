@@ -5,3 +5,4 @@ export * from './nodes.js';
 export * from './paths.js';
 export * from './sources.js';
 export * from './trees.js';
+export * from './user-files.js';

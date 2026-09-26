@@ -1,4 +1,5 @@
 import { type KeyboardEvent, type PointerEvent, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 
 interface SplitterProps {
   /** Width of the pane to the right of the splitter, in px. */
@@ -8,12 +9,23 @@ interface SplitterProps {
   onChange: (width: number) => void;
   onReset: () => void;
   onDragChange: (dragging: boolean) => void;
+  /** Accessible name; defaults to the translated "Resize chat". */
+  label?: string;
 }
 
 const KEY_STEP = 32;
 
 /** Vertical drag handle that resizes the pane on its right. */
-export function Splitter({ value, min, max, onChange, onReset, onDragChange }: SplitterProps) {
+export function Splitter({
+  value,
+  min,
+  max,
+  onChange,
+  onReset,
+  onDragChange,
+  label,
+}: SplitterProps) {
+  const { t } = useTranslation('app');
   const drag = useRef<{ startX: number; startWidth: number } | null>(null);
 
   const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
@@ -54,12 +66,12 @@ export function Splitter({ value, min, max, onChange, onReset, onDragChange }: S
       className="splitter"
       role="separator"
       aria-orientation="vertical"
-      aria-label="Resize chat"
+      aria-label={label ?? t('resizeChat')}
       aria-valuenow={value}
       aria-valuemin={min}
       aria-valuemax={max}
       tabIndex={0}
-      title="Drag to resize · double-click to reset"
+      title={t('splitterHint')}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}

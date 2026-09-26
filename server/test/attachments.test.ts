@@ -307,6 +307,19 @@ describe('answer staging', () => {
     await sweepStaleStaging(dir);
     expect((await readdir(dir)).sort()).toEqual(['.tmp-answer-new']);
   });
+
+  it('never sweeps the staging folder of a running answer', async () => {
+    const active = await make();
+    const released = await make();
+    await released.saveFromBytes({ name: 'a.txt', data: bytes('x'), origin: 'inline' });
+    released.release();
+    released.release();
+    await sweepStaleStaging(dir, 0);
+    await sweepStaleStaging(dir, -1000);
+    expect(await readdir(dir)).toEqual([path.basename(active.dir)]);
+    await active.discard();
+    expect(await readdir(dir)).toEqual([]);
+  });
 });
 
 describe('nodes with attachments', () => {

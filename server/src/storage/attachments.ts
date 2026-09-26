@@ -168,7 +168,8 @@ function splitExtension(name: string): { stem: string; ext: string } {
   return { stem: name.slice(0, dot), ext };
 }
 
-function cleanStem(stem: string): string {
+/** Safe-name rules for a file stem (may return `""`). Shared with user files. */
+export function cleanFileStem(stem: string): string {
   return stem
     .normalize('NFKD')
     .replace(/[̀-ͯ]/g, '')
@@ -185,10 +186,10 @@ export function sanitizeAttachmentName(raw: string, fallback = 'attachment'): st
   const base = raw.split(/[/\\]/).at(-1) ?? '';
   const { stem, ext } = splitExtension(base.trim());
   const suffix = ext ? `.${ext}` : '';
-  const cleaned = cleanStem(stem)
+  const cleaned = cleanFileStem(stem)
     .slice(0, MAX_NAME_LENGTH - suffix.length)
     .replace(/\.+$/, '');
-  const result = `${cleaned || cleanStem(fallback) || 'attachment'}${suffix}`;
+  const result = `${cleaned || cleanFileStem(fallback) || 'attachment'}${suffix}`;
   return ATTACHMENT_NAME_PATTERN.test(result) && !result.includes('..') ? result : 'attachment';
 }
 
@@ -253,9 +254,17 @@ export interface AnswerStaging extends AttachmentStaging {
   list(): Promise<AttachmentInfo[]>;
   /** Stop accepting saves, wait for in-flight ones, drop an empty `attachments/`. */
   seal(): Promise<void>;
-  /** Remove the staging folder. Idempotent. */
+  /** Remove the staging folder. Idempotent. Also calls `release()`. */
   discard(): Promise<void>;
+  /**
+   * Mark the folder as no longer in use (committed or discarded), so `sweepStaleStaging`
+   * may consider its path again. Idempotent.
+   */
+  release(): void;
 }
+
+/** Staging folders of running answers; `sweepStaleStaging` never removes these. */
+const activeStaging = new Set<string>();
 
 export interface AnswerStagingOptions {
   /** Folder of the parent node; the staging folder is created inside it. */
@@ -269,6 +278,11 @@ export interface AnswerStagingOptions {
 
 export async function createAnswerStaging(options: AnswerStagingOptions): Promise<AnswerStaging> {
   const dir = await mkdtemp(path.join(options.parentDir, STAGING_PREFIX));
+  const activeKey = path.resolve(dir);
+  activeStaging.add(activeKey);
+  const release = () => {
+    activeStaging.delete(activeKey);
+  };
   const attachmentsDir = path.join(dir, ATTACHMENTS_DIR);
   const download = options.download ?? downloadToFile;
   const reserved = new Set<string>();
@@ -390,18 +404,28 @@ export async function createAnswerStaging(options: AnswerStagingOptions): Promis
       await Promise.allSettled([...pending]);
       if (discarded) return;
       discarded = true;
-      await rm(dir, { recursive: true, force: true });
+      try {
+        await rm(dir, { recursive: true, force: true });
+      } finally {
+        release();
+      }
     },
+
+    release,
   };
 }
 
-/** Best-effort removal of staging folders left behind by a crash. */
+/**
+ * Best-effort removal of staging folders left behind by a crash. Folders of answers still
+ * running in this process are skipped, however old they are.
+ */
 export async function sweepStaleStaging(parentDir: string, maxAgeMs = 60 * 60 * 1000) {
   const entries = await readdir(parentDir, { withFileTypes: true }).catch(() => []);
   const cutoff = Date.now() - maxAgeMs;
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.startsWith(STAGING_PREFIX)) continue;
     const target = path.join(parentDir, entry.name);
+    if (activeStaging.has(path.resolve(target))) continue;
     try {
       if ((await stat(target)).mtimeMs < cutoff) await rm(target, { recursive: true, force: true });
     } catch {

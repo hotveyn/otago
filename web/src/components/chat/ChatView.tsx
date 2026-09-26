@@ -1,181 +1,60 @@
-import { useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ApiError, sendMessage } from '../../api/client';
-import { keys, useChain, useModels } from '../../api/queries';
+import { useMemo, useRef } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
+import { ApiError } from '../../api/client';
+import { useChain } from '../../api/queries';
 import type { ChainNode, TreeDetail } from '../../api/types';
-import { applyAttachmentEvent, type StreamingAttachment } from '../../lib/attachments';
-import { appendQuote } from '../../lib/quote';
-import { safeStorage } from '../../lib/storage';
-import { nameOf } from '../../lib/tree';
+import { describeError } from '../../lib/chat-errors';
 import { Button } from '../ui/Button';
 import { ErrorNote } from '../ui/ErrorNote';
-import { Composer, type ComposerHandle, type ModelChoice } from './Composer';
-import { Exchange } from './Exchange';
+import { ChatThread } from './ChatThread';
+import { Composer } from './Composer';
 import { type SelectionAction, SelectionActions } from './SelectionActions';
+import { useChatSession } from './useChatSession';
 
 interface ChatViewProps {
   tree: TreeDetail;
   currentId: string;
   onSelectNode: (id: string) => void;
   onStreamingChange: (streaming: boolean) => void;
+  /** Offers "Ask aside" on a selection. */
+  onAskAside?: (text: string) => void;
+  /** False hides "Ask aside" (e.g. while the side chat streams). */
+  askAsideEnabled?: boolean;
 }
 
-interface Pending {
-  parentId: string;
-  question: string;
-  answer: string;
-  /** Live attachment list from `attachment` SSE events. */
-  attachments: StreamingAttachment[];
-  error: unknown;
-}
+const NO_MESSAGES: ChainNode[] = [];
 
-const MODELS_KEY = 'otago.models';
-
-function loadModels(): ModelChoice {
-  try {
-    const parsed = JSON.parse(safeStorage.get(MODELS_KEY) ?? '{}') as Partial<ModelChoice>;
-    return { model: parsed.model ?? null, namingModel: parsed.namingModel ?? null };
-  } catch {
-    return { model: null, namingModel: null };
-  }
-}
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-}
-
-export function ChatView({ tree, currentId, onSelectNode, onStreamingChange }: ChatViewProps) {
-  const queryClient = useQueryClient();
+export function ChatView({
+  tree,
+  currentId,
+  onSelectNode,
+  onStreamingChange,
+  onAskAside,
+  askAsideEnabled = true,
+}: ChatViewProps) {
+  const { t } = useTranslation(['chat', 'common']);
   const chain = useChain(tree.id, currentId);
-  const available = useModels();
-  const [draft, setDraft] = useState('');
-  const [pending, setPending] = useState<Pending | null>(null);
-  const [models, setModels] = useState<ModelChoice>(loadModels);
-  const abort = useRef<AbortController | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
-  const composer = useRef<ComposerHandle>(null);
-  const stickToBottom = useRef(true);
-  const streaming = pending !== null && pending.error === null;
-
-  // Drop stored choices the server no longer offers.
-  const allowed = available.data?.models;
-  const choice: ModelChoice = {
-    model: models.model && allowed && !allowed.includes(models.model) ? null : models.model,
-    namingModel:
-      models.namingModel && allowed && !allowed.includes(models.namingModel)
-        ? null
-        : models.namingModel,
-  };
-
-  const changeModels = (next: ModelChoice) => {
-    setModels(next);
-    safeStorage.set(MODELS_KEY, JSON.stringify(next));
-  };
-
-  useEffect(() => () => abort.current?.abort(), []);
-
-  const onScroll = () => {
-    const element = scroller.current;
-    if (element)
-      stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
-  };
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: scroll on new content only
-  useLayoutEffect(() => {
-    const element = scroller.current;
-    if (element && stickToBottom.current) element.scrollTop = element.scrollHeight;
-  }, [chain.data, pending?.answer, pending?.error, pending?.attachments.length]);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: jump to the end when switching nodes
-  useLayoutEffect(() => {
-    stickToBottom.current = true;
-  }, [currentId]);
-
-  const send = useCallback(async () => {
-    const text = draft.trim();
-    if (!text || abort.current) return;
-    const parentId = currentId;
-    const controller = new AbortController();
-    abort.current = controller;
-    stickToBottom.current = true;
-    setDraft('');
-    setPending({ parentId, question: text, answer: '', attachments: [], error: null });
-    onStreamingChange(true);
-    let answer = '';
-    try {
-      const { nodeId, attachments } = await sendMessage({
-        treeId: tree.id,
-        parentId,
-        text,
-        model: choice.model ?? undefined,
-        namingModel: choice.namingModel ?? undefined,
-        signal: controller.signal,
-        onChunk: (chunk) => {
-          answer += chunk;
-          setPending((current) => current && { ...current, answer: current.answer + chunk });
-        },
-        onAttachment: (event) => {
-          setPending(
-            (current) =>
-              current && {
-                ...current,
-                attachments: applyAttachmentEvent(current.attachments, event),
-              },
-          );
-        },
-      });
-      // Show the new node immediately; the refetch replaces it with the stored version.
-      const parentChain =
-        queryClient.getQueryData<ChainNode[]>(keys.chain(tree.id, parentId)) ?? [];
-      queryClient.setQueryData<ChainNode[]>(keys.chain(tree.id, nodeId), [
-        ...parentChain,
-        {
-          id: nodeId,
-          name: nameOf(nodeId),
-          created: new Date().toISOString(),
-          model: choice.model ?? available.data?.defaults.answer ?? '',
-          user: text,
-          assistant: answer.trim(),
-          // Committed before `done`, so they are fetchable right away.
-          attachments,
-        },
-      ]);
-      await queryClient.invalidateQueries({ queryKey: keys.tree(tree.id) });
-      setPending(null);
-      onSelectNode(nodeId);
-    } catch (error) {
-      setDraft((current) => current || text);
-      if (controller.signal.aborted) setPending(null);
-      else setPending((current) => current && { ...current, error });
-    } finally {
-      abort.current = null;
-      onStreamingChange(false);
-    }
-  }, [
-    draft,
-    currentId,
-    tree.id,
-    choice.model,
-    choice.namingModel,
-    queryClient,
-    onSelectNode,
+  const session = useChatSession({
+    treeId: tree.id,
+    parentId: currentId,
+    onSent: onSelectNode,
     onStreamingChange,
-    available.data,
-  ]);
+  });
+  const { pending, streaming, quote } = session;
 
   // Quotes only edit the draft; the message still goes under `currentId`.
-  const quote = useCallback((text: string) => {
-    setDraft((current) => appendQuote(current, text));
-    composer.current?.focusEnd();
-  }, []);
-
   const selectionActions = useMemo<SelectionAction[]>(
-    () => [{ id: 'quote', label: 'Quote', run: quote }],
-    [quote],
+    () => [
+      { id: 'quote', label: t('quote'), run: quote },
+      ...(onAskAside && askAsideEnabled
+        ? [{ id: 'aside', label: t('askAside'), run: onAskAside }]
+        : []),
+    ],
+    [t, quote, onAskAside, askAsideEnabled],
   );
 
-  const stop = () => abort.current?.abort();
-  const messages = chain.data ?? [];
+  const messages = chain.data ?? NO_MESSAGES;
   const showPending = pending !== null && pending.parentId === currentId;
   const pendingElsewhere = pending !== null && pending.parentId !== currentId && streaming;
 
@@ -201,98 +80,69 @@ export function ChatView({ tree, currentId, onSelectNode, onStreamingChange }: C
         </div>
       </header>
 
-      <div className="chat-scroll" ref={scroller} onScroll={onScroll}>
-        {chain.error ? (
-          <div className="chat-empty">
-            <ErrorNote error={chain.error} />
-            {chain.error instanceof ApiError && chain.error.status === 404 && (
-              <Button size="sm" onClick={() => onSelectNode('')}>
-                Go to root
-              </Button>
-            )}
-          </div>
-        ) : messages.length === 0 && !showPending ? (
-          <div className="chat-empty">
+      <ChatThread
+        treeId={tree.id}
+        messages={messages}
+        pending={pending}
+        showPending={showPending}
+        currentId={currentId}
+        onSelectNode={onSelectNode}
+        onDismissError={session.dismissError}
+        scrollerRef={scroller}
+        scrollKey={currentId}
+        error={
+          chain.error ? (
+            <>
+              <ErrorNote error={chain.error} message={describeError(chain.error).message} />
+              {chain.error instanceof ApiError && chain.error.status === 404 && (
+                <Button size="sm" onClick={() => onSelectNode('')}>
+                  {t('goToRoot')}
+                </Button>
+              )}
+            </>
+          ) : null
+        }
+        empty={
+          <>
             <p className="empty-title">{tree.title}</p>
-            <p className="muted">
-              {currentId === '' ? 'Ask anything to start a new branch from the root.' : 'Loading…'}
-            </p>
+            <p className="muted">{currentId === '' ? t('emptyRoot') : t('common:loading')}</p>
             {tree.instructions && <p className="instructions-preview">{tree.instructions}</p>}
-          </div>
-        ) : (
-          <div className="thread">
-            {messages.map((node) => (
-              <Exchange
-                key={node.id}
-                question={node.user}
-                answer={node.assistant}
-                attachments={{
-                  treeId: tree.id,
-                  nodeId: node.id,
-                  attachments: node.attachments,
-                  streaming: null,
-                }}
-                current={node.id === currentId}
-                meta={
-                  <>
-                    <button
-                      type="button"
-                      className="node-link"
-                      onClick={() => onSelectNode(node.id)}
-                    >
-                      {node.name}
-                    </button>
-                    <span className="muted">{formatDate(node.created)}</span>
-                    {node.model && <span className="model-tag">{node.model}</span>}
-                  </>
-                }
-              />
-            ))}
-            {showPending && pending && (
-              <Exchange
-                question={pending.question}
-                answer={pending.answer}
-                attachments={{
-                  treeId: tree.id,
-                  nodeId: null,
-                  attachments: [],
-                  streaming: pending.attachments,
-                  unsaved: pending.error !== null,
-                }}
-                streaming={pending.error === null}
-                meta={<span className="muted">{pending.error ? 'Not saved' : 'Answering…'}</span>}
-                footer={
-                  pending.error ? (
-                    <ErrorNote error={pending.error} onDismiss={() => setPending(null)} />
-                  ) : null
-                }
-              />
-            )}
-          </div>
-        )}
-      </div>
+          </>
+        }
+      />
 
       <SelectionActions container={scroller} actions={selectionActions} resetKey={currentId} />
 
       {pendingElsewhere && pending && (
         <div className="chat-notice">
-          Answering under <code>{pending.parentId || 'root'}</code>…
+          <Trans
+            t={t}
+            i18nKey="answeringUnder"
+            values={{ target: pending.parentId || t('common:root') }}
+            components={{ code: <code /> }}
+          />
           <Button size="sm" variant="ghost" onClick={() => onSelectNode(pending.parentId)}>
-            Show
+            {t('show')}
           </Button>
         </div>
       )}
 
       <Composer
-        ref={composer}
-        value={draft}
-        onChange={setDraft}
-        onSend={send}
-        onStop={stop}
+        ref={session.composer}
+        value={session.draft}
+        onChange={session.setDraft}
+        onSend={session.send}
+        onStop={session.stop}
         streaming={streaming}
         target={currentId}
-        models={choice}
-        onModelsChange={changeModels}
+        models={session.models}
+        onModelsChange={session.changeModels}
+        files={session.files}
+        fileErrors={session.fileErrors}
+        onAddFiles={session.addFiles}
+        onRemoveFile={session.removeFile}
+        onDismissFileErrors={session.dismissFileErrors}
+        canSend={session.canSend}
       />
     </div>
   );

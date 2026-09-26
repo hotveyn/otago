@@ -160,11 +160,38 @@ describe('node management API', () => {
     expect(unknownTree.statusCode).toBe(404);
   });
 
-  it('409 while the tree lock is held', async () => {
-    const release = locks.acquire('rust');
-    expect((await del({ ids: ['lifetimes'] })).statusCode).toBe(409);
-    expect((await move({ ids: ['lifetimes'], targetParentId: 'ownership' })).statusCode).toBe(409);
+  it('409 tree_busy_streaming while a stream (shared) holds the tree', async () => {
+    const release = locks.acquireShared('rust');
+    const deleted = await del({ ids: ['lifetimes'] });
+    expect(deleted.statusCode).toBe(409);
+    expect(deleted.json()).toEqual({
+      error: 'Tree "rust" is busy: an answer is still streaming. Try again when it finishes.',
+      code: 'tree_busy_streaming',
+    });
+    const moved = await move({ ids: ['lifetimes'], targetParentId: 'ownership' });
+    expect(moved.statusCode).toBe(409);
+    expect(moved.json().code).toBe('tree_busy_streaming');
     release();
     expect((await del({ ids: ['lifetimes'] })).statusCode).toBe(200);
+    expect(locks.isLocked('rust')).toBe(false);
+  });
+
+  it('409 tree_busy_structural while a move/delete (exclusive) holds the tree', async () => {
+    const release = locks.acquireExclusive('rust');
+    const deleted = await del({ ids: ['lifetimes'] });
+    expect(deleted.statusCode).toBe(409);
+    expect(deleted.json().code).toBe('tree_busy_structural');
+    const moved = await move({ ids: ['lifetimes'], targetParentId: 'ownership' });
+    expect(moved.statusCode).toBe(409);
+    expect(moved.json().code).toBe('tree_busy_structural');
+    release();
+    expect((await move({ ids: ['lifetimes'], targetParentId: 'ownership' })).statusCode).toBe(200);
+    expect(locks.isLocked('rust')).toBe(false);
+  });
+
+  it('error bodies without a code omit the field', async () => {
+    const res = await del({ ids: ['missing'] });
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).not.toHaveProperty('code');
   });
 });

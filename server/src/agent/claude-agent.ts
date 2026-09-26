@@ -40,7 +40,7 @@ export function createClaudeAgent(): Agent {
     async *ask(input: AskInput): AsyncGenerator<AgentEvent> {
       const abortController = linkedAbortController(input.signal);
       const run = query({
-        prompt: buildUserPrompt(input.chain, input.question),
+        prompt: buildUserPrompt(input.chain, input.question, input.files),
         options: buildAskOptions(input, abortController),
       });
       let text = '';

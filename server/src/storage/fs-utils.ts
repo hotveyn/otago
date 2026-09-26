@@ -20,6 +20,14 @@ export function isErrno(error: unknown, ...codes: string[]): boolean {
   );
 }
 
+/** First free name among `base`, `base-2`, `base-3`, … not in any of `taken`. */
+function pickName(base: string, ...taken: ReadonlySet<string>[]): string {
+  for (let n = 1; ; n++) {
+    const candidate = n === 1 ? base : `${base}-${n}`;
+    if (!taken.some((set) => set.has(candidate))) return candidate;
+  }
+}
+
 /** First free name among `base`, `base-2`, `base-3`, … in `dir`. */
 export async function uniqueName(
   dir: string,
@@ -27,22 +35,69 @@ export async function uniqueName(
   reserved: ReadonlySet<string> = new Set(),
 ): Promise<string> {
   const taken = new Set(await readdir(dir).catch(() => [] as string[]));
-  for (let n = 1; ; n++) {
-    const candidate = n === 1 ? base : `${base}-${n}`;
-    if (!taken.has(candidate) && !reserved.has(candidate)) return candidate;
+  return pickName(base, taken, reserved);
+}
+
+/** Names handed out by `claimUniqueName` and not yet released, keyed by resolved dir. */
+const claims = new Map<string, Set<string>>();
+
+export interface NameClaim {
+  name: string;
+  /** Drop the claim. Idempotent. */
+  release: () => void;
+}
+
+/**
+ * Like `uniqueName`, but the picked name is also reserved in this process until `release()`,
+ * so concurrent callers never get the same name for one dir. The pick and the claim run
+ * synchronously after `readdir`, so there is no race between them.
+ */
+export async function claimUniqueName(
+  dir: string,
+  base: string,
+  reserved: ReadonlySet<string> = new Set(),
+): Promise<NameClaim> {
+  const key = path.resolve(dir);
+  const taken = new Set(await readdir(dir).catch(() => [] as string[]));
+  let claimed = claims.get(key);
+  if (!claimed) {
+    claimed = new Set();
+    claims.set(key, claimed);
   }
+  const name = pickName(base, taken, reserved, claimed);
+  claimed.add(name);
+  let released = false;
+  return {
+    name,
+    release: () => {
+      if (released) return;
+      released = true;
+      const current = claims.get(key);
+      if (!current) return;
+      current.delete(name);
+      if (current.size === 0) claims.delete(key);
+    },
+  };
 }
 
 /**
  * First free file name among `name`, `stem-2.ext`, `stem-3.ext`, … (suffix before the last
- * extension; `README` → `README-2`). Synchronous, so callers can reserve names without races.
+ * extension; `README` → `README-2`). When `extension` is given and `name` ends with it, the
+ * suffix goes before that whole extension (`book.fb2.zip` → `book-2.fb2.zip`).
+ * Synchronous, so callers can reserve names without races.
  * The result never exceeds `maxLength` characters.
  */
-export function uniqueFileName(taken: ReadonlySet<string>, name: string, maxLength = 120): string {
+export function uniqueFileName(
+  taken: ReadonlySet<string>,
+  name: string,
+  maxLength = 120,
+  extension?: string,
+): string {
   if (!taken.has(name)) return name;
   const dot = name.lastIndexOf('.');
-  const stem = dot > 0 ? name.slice(0, dot) : name;
-  const ext = dot > 0 ? name.slice(dot) : '';
+  const whole = extension && name.length > extension.length && name.endsWith(extension);
+  const stem = whole ? name.slice(0, -extension.length) : dot > 0 ? name.slice(0, dot) : name;
+  const ext = whole ? extension : dot > 0 ? name.slice(dot) : '';
   for (let n = 2; ; n++) {
     const suffix = `-${n}`;
     const room = Math.max(1, maxLength - suffix.length - ext.length);

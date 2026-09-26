@@ -10,17 +10,49 @@ import {
   useReactFlow,
 } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
 import { keys } from '../../api/queries';
 import type { TreeDetail } from '../../api/types';
+import { describeError } from '../../lib/chat-errors';
 import { afterDelete, afterMove, canMoveTo, chainIds, flatten, topLevelIds } from '../../lib/tree';
 import { Button } from '../ui/Button';
 import { ErrorNote } from '../ui/ErrorNote';
 import { BoxNode as BoxNodeComponent } from './BoxNode';
-import { type BoxNode, fromFlowId, layoutTree } from './layout';
+import {
+  type BoxNode,
+  fromFlowId,
+  ghostKey,
+  isGhostKey,
+  layoutTree,
+  loadLabelFonts,
+} from './layout';
 import { DeleteDialog, MoveDialog } from './NodeDialogs';
+import { TreeEdge } from './TreeEdge';
 
 const nodeTypes = { box: BoxNodeComponent };
+const edgeTypes = { tree: TreeEdge };
+
+/** How long boxes glide to their new place after the hierarchy changes. */
+const MOVE_MS = 380;
+
+const prefersReducedMotion = () =>
+  window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+
+/** Bumps once the label fonts load, so the layout re-measures with real glyph widths. */
+function useFontsVersion(): number {
+  const [version, setVersion] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    loadLabelFonts()
+      .catch(() => undefined)
+      .then(() => alive && setVersion((v) => v + 1));
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return version;
+}
 
 /** Below this zoom labels get hard to read, so big trees focus on one area instead of fitting. */
 const READABLE_ZOOM = 0.6;
@@ -38,7 +70,13 @@ interface GraphViewProps {
   onSelectNode: (id: string) => void;
   /** Current node changed because of a delete/move; replaces the history entry. */
   onCurrentChange: (id: string) => void;
+  /** Nodes were moved or deleted (after the hierarchy cache is updated). */
+  onNodesChanged?: (change: NodesChange) => void;
 }
+
+export type NodesChange =
+  | { kind: 'move'; moved: Record<string, string> }
+  | { kind: 'delete'; ids: string[] };
 
 export function GraphView(props: GraphViewProps) {
   return (
@@ -48,14 +86,27 @@ export function GraphView(props: GraphViewProps) {
   );
 }
 
-function Graph({ tree, currentId, busy, onSelectNode, onCurrentChange }: GraphViewProps) {
+function Graph({
+  tree,
+  currentId,
+  busy,
+  onSelectNode,
+  onCurrentChange,
+  onNodesChanged,
+}: GraphViewProps) {
+  const { t } = useTranslation(['graph', 'common']);
   const queryClient = useQueryClient();
   const flow = useReactFlow<BoxNode>();
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [dialog, setDialog] = useState<'delete' | 'move' | null>(null);
 
-  const layout = useMemo(() => layoutTree(tree.title, tree.nodes), [tree.title, tree.nodes]);
+  const fontsVersion = useFontsVersion();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-measure once fonts load
+  const layout = useMemo(
+    () => layoutTree(tree.title, tree.nodes, currentId),
+    [tree.title, tree.nodes, currentId, fontsVersion],
+  );
   const known = useMemo(
     () => new Set(flatten(tree.nodes).map(({ node }) => node.id)),
     [tree.nodes],
@@ -73,6 +124,7 @@ function Graph({ tree, currentId, busy, onSelectNode, onCurrentChange }: GraphVi
   const decorate = useCallback(
     (nodes: BoxNode[]): BoxNode[] =>
       nodes.map((node) => {
+        if (node.data.ghost) return node;
         const id = node.data.nodeId;
         const data = {
           ...node.data,
@@ -80,35 +132,103 @@ function Graph({ tree, currentId, busy, onSelectNode, onCurrentChange }: GraphVi
           inChain: node.data.isRoot || chain.has(id),
           selected: selection.has(id),
           dropTarget: node.id === dropTarget,
+          busy,
         };
         const same =
           data.current === node.data.current &&
           data.inChain === node.data.inChain &&
           data.selected === node.data.selected &&
-          data.dropTarget === node.data.dropTarget;
+          data.dropTarget === node.data.dropTarget &&
+          data.busy === node.data.busy;
         return same ? node : { ...node, data };
       }),
-    [currentId, chain, selection, dropTarget],
+    [currentId, chain, selection, dropTarget, busy],
   );
 
   const [nodes, setNodes] = useState<BoxNode[]>(() => decorate(layout.nodes));
-  // New hierarchy → fresh positions; decoration changes are handled by the effect below.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reset only when the layout changes
-  useEffect(() => setNodes(decorate(layout.nodes)), [layout]);
+  const nodesRef = useRef(nodes);
+  const decorateRef = useRef(decorate);
+  useEffect(() => {
+    nodesRef.current = nodes;
+    decorateRef.current = decorate;
+  });
+
+  // When nodes are added (e.g. a new answer), glide everything to the new layout and grow the
+  // new boxes out of their parent. Moves, deletes and drops snap into place instantly.
+  const frame = useRef(0);
+  const animateTo = useCallback(
+    (target: BoxNode[]) => {
+      cancelAnimationFrame(frame.current);
+      const from = new Map(nodesRef.current.map((node) => [node.id, node.position]));
+      const parentOf = new Map(layout.edges.map((edge) => [edge.target, edge.source]));
+      const shared = target.some((node) => from.has(node.id));
+      const added = target.some((node) => !from.has(node.id));
+      if (!shared || !added || prefersReducedMotion()) {
+        setNodes(decorateRef.current(target));
+        return;
+      }
+      const startOf = (node: BoxNode) => {
+        const own = from.get(node.id);
+        if (own) return own;
+        // A new answer takes the place of the placeholder that stood under its parent.
+        const ghost = from.get(ghostKey(parentOf.get(node.id) ?? ''));
+        if (ghost && !node.data.ghost) return ghost;
+        const parent = target.find((other) => other.id === parentOf.get(node.id));
+        const origin = parent && from.get(parent.id);
+        if (!parent || !origin) return node.position;
+        // Centre the new box under the parent's old spot.
+        return {
+          x: origin.x + ((parent.width ?? 0) - (node.width ?? 0)) / 2,
+          y: origin.y + (parent.height ?? 0),
+        };
+      };
+      const moves = target.map((node) => ({ node, a: startOf(node) }));
+      const began = performance.now();
+      const step = (now: number) => {
+        const t = Math.min(1, (now - began) / MOVE_MS);
+        const k = 1 - (1 - t) ** 3;
+        const frameNodes = moves.map(({ node, a }) => {
+          if (t === 1 || (a.x === node.position.x && a.y === node.position.y)) return node;
+          return {
+            ...node,
+            position: {
+              x: a.x + (node.position.x - a.x) * k,
+              y: a.y + (node.position.y - a.y) * k,
+            },
+          };
+        });
+        setNodes(decorateRef.current(frameNodes));
+        if (t < 1) frame.current = requestAnimationFrame(step);
+      };
+      frame.current = requestAnimationFrame(step);
+    },
+    [layout.edges],
+  );
+  useEffect(() => () => cancelAnimationFrame(frame.current), []);
+
+  // New hierarchy → animate to fresh positions; decoration changes are handled below.
+  useEffect(() => animateTo(layout.nodes), [animateTo, layout.nodes]);
   useEffect(() => setNodes((current) => decorate(current)), [decorate]);
 
   const edges = useMemo(
     () =>
-      layout.edges.map((edge) => ({
-        ...edge,
-        type: 'smoothstep',
-        className: chain.has(fromFlowId(edge.target)) ? 'edge-chain' : undefined,
-      })),
+      layout.edges.map((edge) => {
+        if (isGhostKey(edge.target)) return { ...edge, className: 'edge-ghost' };
+        const inChain = chain.has(fromFlowId(edge.target));
+        // Chain edges sit above the grey ones where sibling buses overlap, with marching dashes.
+        return {
+          ...edge,
+          className: inChain ? 'edge-chain' : undefined,
+          animated: inChain,
+          zIndex: inChain ? 1 : 0,
+        };
+      }),
     [layout.edges, chain],
   );
 
   const pane = useRef<HTMLDivElement>(null);
-  const boxOf = (id: string) => layout.nodes.find((node) => node.data.nodeId === id);
+  const boxOf = (id: string) =>
+    layout.nodes.find((node) => !node.data.ghost && node.data.nodeId === id);
 
   // On tree switch: fit small trees; for big ones keep a readable zoom around the current node.
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on tree switch
@@ -161,6 +281,7 @@ function Graph({ tree, currentId, busy, onSelectNode, onCurrentChange }: GraphVi
       setSelection(new Set());
       setDialog(null);
       onCurrentChange(afterDelete(currentId, ids));
+      onNodesChanged?.({ kind: 'delete', ids });
     },
   });
 
@@ -172,8 +293,9 @@ function Graph({ tree, currentId, busy, onSelectNode, onCurrentChange }: GraphVi
       setSelection(new Set());
       setDialog(null);
       onCurrentChange(afterMove(currentId, result.moved));
+      onNodesChanged?.({ kind: 'move', moved: result.moved });
     },
-    onError: () => setNodes(decorate(layout.nodes)),
+    onError: () => animateTo(layout.nodes),
   });
 
   const actionError = remove.error ?? move.error;
@@ -187,6 +309,7 @@ function Graph({ tree, currentId, busy, onSelectNode, onCurrentChange }: GraphVi
   };
 
   const onNodeClick: NodeMouseHandler<BoxNode> = (event, node) => {
+    if (node.data.ghost) return;
     const id = node.data.nodeId;
     if (event.shiftKey || event.metaKey || event.ctrlKey) {
       if (node.data.isRoot) return;
@@ -212,7 +335,10 @@ function Graph({ tree, currentId, busy, onSelectNode, onCurrentChange }: GraphVi
       .map((hit) => hit as BoxNode)
       .find(
         (hit) =>
-          hit.id !== node.id && canMoveTo(ids, hit.data.nodeId) && !ids.includes(hit.data.nodeId),
+          hit.id !== node.id &&
+          !hit.data.ghost &&
+          canMoveTo(ids, hit.data.nodeId) &&
+          !ids.includes(hit.data.nodeId),
       );
   };
 
@@ -223,7 +349,7 @@ function Graph({ tree, currentId, busy, onSelectNode, onCurrentChange }: GraphVi
   const onNodeDragStop: OnNodeDrag<BoxNode> = (_event, node) => {
     const target = findDropTarget(node);
     setDropTarget(null);
-    setNodes(decorate(layout.nodes));
+    animateTo(layout.nodes);
     if (!target || busy) return;
     resetErrors();
     move.mutate({ ids: dragIds(node), target: target.data.nodeId });
@@ -246,31 +372,36 @@ function Graph({ tree, currentId, busy, onSelectNode, onCurrentChange }: GraphVi
         {selection.size > 0 ? (
           <>
             <span className="selection-count">
-              {topSelected.length} selected
+              {t('selected', { count: topSelected.length })}
               {topSelected.length !== selection.size && (
-                <span className="muted"> ({selection.size - topSelected.length} inside)</span>
+                <span className="muted">
+                  {' '}
+                  {t('inside', { count: selection.size - topSelected.length })}
+                </span>
               )}
             </span>
             <Button size="sm" variant="danger" disabled={busy} onClick={() => openDialog('delete')}>
-              Delete
+              {t('common:delete')}
             </Button>
             <Button size="sm" disabled={busy} onClick={() => openDialog('move')}>
-              Move to…
+              {t('moveTo')}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setSelection(new Set())}>
-              Clear
+              {t('clear')}
             </Button>
           </>
         ) : (
-          <span className="muted small">
-            Click to open · Shift/⌘-click to select · drag onto a node to move
-          </span>
+          <span className="muted small">{t('hint')}</span>
         )}
-        {busy && <span className="muted small">Answering… changes are paused</span>}
+        {busy && <span className="muted small">{t('busy')}</span>}
       </div>
       {actionError && dialog === null && (
         <div className="graph-error">
-          <ErrorNote error={actionError} onDismiss={resetErrors} />
+          <ErrorNote
+            error={actionError}
+            message={describeError(actionError).message}
+            onDismiss={resetErrors}
+          />
         </div>
       )}
 
@@ -278,6 +409,7 @@ function Graph({ tree, currentId, busy, onSelectNode, onCurrentChange }: GraphVi
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
         onNodeClick={onNodeClick}
         onNodeDrag={onNodeDrag}

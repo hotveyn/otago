@@ -1,0 +1,16 @@
+export const viewer = {
+  sourceLabel: 'Source {{name}}',
+  fileLabel: 'File {{name}}',
+  attachmentLabel: 'Attachment {{name}}',
+  lines: 'Lines',
+  rendered: 'Rendered',
+  book: 'Book ↓',
+  raw: 'Raw ↗',
+  open: 'Open ↗',
+  closeSource: 'Close source',
+  closeAttachment: 'Close attachment',
+  tooLarge: 'Too large to preview.',
+  noPreview: 'No preview for this file type.',
+  couldNotParse: 'Could not parse;',
+  previewAsText: 'Preview as text',
+};

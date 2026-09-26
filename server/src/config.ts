@@ -18,6 +18,9 @@ export interface Config {
   allowPrivateUrls: boolean;
 }
 
+/** `server/`. Relative paths in the config resolve from here. Works from `src/` and `dist/`. */
+export const SERVER_DIR = path.resolve(import.meta.dirname, '..');
+
 export const DEFAULT_MODELS: ModelConfig = {
   available: ['claude-opus-5-5', 'claude-sonnet-5', 'claude-fable-5-1', 'claude-haiku-4-5'],
   answer: 'claude-opus-5-5',
@@ -28,7 +31,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     host: '127.0.0.1',
     port: Number(env.OTAGO_PORT ?? 3001),
-    treesDir: path.resolve(env.OTAGO_TREES_DIR ?? './trees'),
+    treesDir: path.resolve(SERVER_DIR, env.OTAGO_TREES_DIR ?? './trees'),
     models: loadModels(env),
     allowPrivateUrls: ['1', 'true'].includes(env.OTAGO_ALLOW_PRIVATE_URLS ?? ''),
   };

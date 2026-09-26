@@ -38,6 +38,7 @@ for await (const event of agent.ask({
   instructions: tree.instructions,
   chain,
   question,
+  files: [],
   model: config.models.answer,
   signal: controller.signal,
   staging,

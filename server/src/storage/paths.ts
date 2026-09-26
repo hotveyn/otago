@@ -7,17 +7,20 @@ export const SOURCES_DIR = 'sources';
 export const TEMP_PREFIX = '.tmp-';
 /** Folder with the files of one answer, inside every node folder. */
 export const ATTACHMENTS_DIR = 'attachments';
+/** Folder with the user files of the message that created the node, inside a node folder. */
+export const USER_FILES_DIR = 'files';
 /** Staging folder of an answer being generated; becomes the node folder on success. */
 export const STAGING_PREFIX = `${TEMP_PREFIX}answer-`;
 
 /** Names that cannot be used for a node at any level. */
-export const RESERVED_NODE_NAMES: ReadonlySet<string> = new Set([ATTACHMENTS_DIR]);
+export const RESERVED_NODE_NAMES: ReadonlySet<string> = new Set([ATTACHMENTS_DIR, USER_FILES_DIR]);
 
 /** Names that cannot be used for a top-level node inside a tree folder. */
 export const RESERVED_ROOT_NAMES: ReadonlySet<string> = new Set([
   TREE_FILE,
   SOURCES_DIR,
   ATTACHMENTS_DIR,
+  USER_FILES_DIR,
 ]);
 
 /** Reserved child names under `parentId` (`""` = tree root). */

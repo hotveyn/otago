@@ -1,0 +1,31 @@
+{
+  "slug": "rich-answers",
+  "title": "Rich answers: attachments, Mermaid diagrams, smart tables",
+  "created": "2026-09-24T00:00:00Z",
+  "workspace_root": "/Users/ioannshestopalov/Programming/otago",
+  "contracts": {
+    "owner": "server",
+    "generated": true,
+    "path": ".claude/features/archive/26-09-2026/rich-answers/contracts"
+  },
+  "projects": [
+    {
+      "name": "server",
+      "root": "server",
+      "manifest": "package.json",
+      "stack": "node (Fastify 5 + TypeScript + Claude Agent SDK)",
+      "role": "server",
+      "stage": "implemented"
+    },
+    {
+      "name": "web",
+      "root": "web",
+      "manifest": "package.json",
+      "stack": "node (React 19 + Vite + TypeScript)",
+      "role": "client",
+      "stage": "implemented"
+    }
+  ],
+  "archived": "2026-09-26T08:28:45Z",
+  "archived_to": ".claude/features/archive/26-09-2026/rich-answers"
+}

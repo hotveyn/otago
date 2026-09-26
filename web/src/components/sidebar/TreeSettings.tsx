@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { type FormEvent, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
 import { keys } from '../../api/queries';
 import type { TreeDetail } from '../../api/types';
@@ -7,6 +8,7 @@ import { Button } from '../ui/Button';
 import { ErrorNote } from '../ui/ErrorNote';
 
 export function TreeSettings({ tree }: { tree: TreeDetail }) {
+  const { t } = useTranslation('sidebar');
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState(tree.title);
@@ -40,14 +42,16 @@ export function TreeSettings({ tree }: { tree: TreeDetail }) {
           aria-expanded={open}
         >
           <span className="disclosure-mark">{open ? '−' : '+'}</span>
-          <h3>Settings</h3>
+          <h3>{t('settings.title')}</h3>
         </button>
-        {!open && tree.instructions && <span className="muted small">instructions set</span>}
+        {!open && tree.instructions && (
+          <span className="muted small">{t('settings.instructionsSet')}</span>
+        )}
       </header>
       {open && (
         <form className="stack" onSubmit={submit}>
           <label className="field">
-            <span className="field-label">Title</span>
+            <span className="field-label">{t('settings.fieldTitle')}</span>
             <input
               className="input"
               value={title}
@@ -56,15 +60,15 @@ export function TreeSettings({ tree }: { tree: TreeDetail }) {
             />
           </label>
           <label className="field">
-            <span className="field-label">Instructions</span>
+            <span className="field-label">{t('settings.fieldInstructions')}</span>
             <textarea
               className="input textarea"
               rows={6}
               value={instructions}
-              placeholder="Answer in Russian. I know C++, compare with it where useful."
+              placeholder={t('settings.instructionsPlaceholder')}
               onChange={(event) => setInstructions(event.target.value)}
             />
-            <span className="field-hint">Added to the system prompt on every question.</span>
+            <span className="field-hint">{t('settings.instructionsHint')}</span>
           </label>
           <ErrorNote error={save.error} />
           <div className="row">
@@ -74,9 +78,9 @@ export function TreeSettings({ tree }: { tree: TreeDetail }) {
               variant="primary"
               disabled={!dirty || !title.trim() || save.isPending}
             >
-              {save.isPending ? 'Saving…' : 'Save'}
+              {save.isPending ? t('settings.saving') : t('settings.save')}
             </Button>
-            {save.isSuccess && !dirty && <span className="muted small">Saved</span>}
+            {save.isSuccess && !dirty && <span className="muted small">{t('settings.saved')}</span>}
           </div>
         </form>
       )}

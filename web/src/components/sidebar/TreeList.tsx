@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { type FormEvent, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
 import { keys } from '../../api/queries';
 import type { TreeMeta } from '../../api/types';
@@ -14,6 +15,7 @@ interface TreeListProps {
 }
 
 export function TreeList({ trees, error, currentId, onSelect }: TreeListProps) {
+  const { t } = useTranslation(['sidebar', 'common']);
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState('');
@@ -35,15 +37,17 @@ export function TreeList({ trees, error, currentId, onSelect }: TreeListProps) {
   return (
     <section className="panel">
       <header className="panel-header">
-        <h3>Trees</h3>
+        <h3>{t('trees.title')}</h3>
         {!creating && (
           <Button size="sm" variant="ghost" onClick={() => setCreating(true)}>
-            + New
+            {t('trees.new')}
           </Button>
         )}
       </header>
       <ErrorNote error={error} />
-      {trees.length === 0 && !creating && !error && <p className="muted small">No trees yet.</p>}
+      {trees.length === 0 && !creating && !error && (
+        <p className="muted small">{t('trees.empty')}</p>
+      )}
       <ul className="list">
         {trees.map((tree) => (
           <li key={tree.id}>
@@ -62,7 +66,7 @@ export function TreeList({ trees, error, currentId, onSelect }: TreeListProps) {
         <form className="stack" onSubmit={submit}>
           <input
             className="input"
-            placeholder="Tree title, e.g. Rust basics"
+            placeholder={t('trees.titlePlaceholder')}
             value={title}
             onChange={(event) => setTitle(event.target.value)}
             onKeyDown={(event) => {
@@ -80,10 +84,10 @@ export function TreeList({ trees, error, currentId, onSelect }: TreeListProps) {
               variant="primary"
               disabled={!title.trim() || create.isPending}
             >
-              Create
+              {t('common:create')}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setCreating(false)}>
-              Cancel
+              {t('common:cancel')}
             </Button>
           </div>
         </form>

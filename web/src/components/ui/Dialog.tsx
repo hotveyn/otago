@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 
 interface DialogProps {
   open: boolean;
@@ -11,6 +12,7 @@ interface DialogProps {
 
 /** Native modal `<dialog>`: focus trap, Escape and backdrop come for free. */
 export function Dialog({ open, title, onClose, children, footer, wide }: DialogProps) {
+  const { t } = useTranslation();
   const ref = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -34,7 +36,7 @@ export function Dialog({ open, title, onClose, children, footer, wide }: DialogP
         <div className="dialog-body">
           <header className="dialog-header">
             <h2>{title}</h2>
-            <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>
+            <button type="button" className="icon-btn" aria-label={t('close')} onClick={onClose}>
               ×
             </button>
           </header>

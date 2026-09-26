@@ -1,4 +1,5 @@
 import { type ReactNode, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { attachmentUrl } from '../../api/client';
 import type { AttachmentInfo } from '../../api/types';
 import {
@@ -12,13 +13,15 @@ import { useOpenAttachment } from '../source-viewer-context';
 import { useAttachmentScope } from './attachment-scope';
 
 export function KindBadge({ name }: { name: string }) {
-  return <span className="file-badge">{extensionOf(name) || 'file'}</span>;
+  const { t } = useTranslation('chat');
+  return <span className="file-badge">{extensionOf(name) || t('attachments.file')}</span>;
 }
 
 export function BrokenAttachment({ name, message }: { name: string; message?: string }) {
+  const { t } = useTranslation('chat');
   return (
     <span className="attachment-broken" role="note">
-      {message ?? `Attachment not found: ${name}`}
+      {message ?? t('attachments.notFound', { name })}
     </span>
   );
 }
@@ -73,6 +76,7 @@ function ReadyChip({
 
 /** `[label](attachments/<name>)` in the answer text. */
 export function AttachmentLink({ name, children }: { name: string; children?: ReactNode }) {
+  const { t } = useTranslation('chat');
   const scope = useAttachmentScope();
   const label = children ?? name;
   if (!scope) return <span className="attachment-chip attachment-chip-pending">{label}</span>;
@@ -85,9 +89,14 @@ export function AttachmentLink({ name, children }: { name: string; children?: Re
         </ReadyChip>
       ) : null;
     case 'staged':
-      return <PendingChip name={name} label={scope.unsaved ? 'not saved' : 'ready'} />;
+      return (
+        <PendingChip
+          name={name}
+          label={scope.unsaved ? t('attachments.notSaved') : t('attachments.ready')}
+        />
+      );
     case 'saving':
-      return <PendingChip name={name} label="saving…" />;
+      return <PendingChip name={name} label={t('attachments.saving')} />;
     case 'failed':
       return <BrokenAttachment name={name} message={`${name}: ${resolved.message}`} />;
     default:
@@ -106,6 +115,7 @@ function InlineImage({
   info: AttachmentInfo;
   alt: string;
 }) {
+  const { t } = useTranslation();
   const [broken, setBroken] = useState(false);
   if (broken) return <BrokenAttachment name={info.name} />;
   return (
@@ -120,7 +130,7 @@ function InlineImage({
       <span className="md-attachment-caption muted small">
         {alt && <span>{alt} · </span>}
         <a href={downloadUrl} download={info.name}>
-          Download
+          {t('download')}
         </a>
       </span>
     </span>

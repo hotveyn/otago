@@ -1,4 +1,5 @@
 import { type ReactNode, useDeferredValue, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { downloadText, toCsv } from '../../lib/csv';
 import { filterRows, type SortDirection, sortRows } from '../../lib/table';
 
@@ -78,6 +79,7 @@ export function TableBar({
   baseName,
   children,
 }: TableBarProps) {
+  const { t } = useTranslation('chat');
   const exportCsv = () => {
     const csv = toCsv(
       header,
@@ -90,17 +92,19 @@ export function TableBar({
       <input
         type="search"
         className="data-table-filter"
-        placeholder="Filter rows"
-        aria-label="Filter rows"
+        placeholder={t('table.filter')}
+        aria-label={t('table.filter')}
         value={query}
         onChange={(event) => onQuery(event.target.value)}
       />
       <span className="data-table-count">
-        {shown === total ? `${total} rows` : `${shown} of ${total} rows`}
+        {shown === total
+          ? t('table.rows', { count: total })
+          : t('table.rowsOf', { shown, count: total })}
       </span>
       <span className="spacer" />
       <button type="button" className="btn btn-ghost btn-sm" onClick={exportCsv}>
-        Export CSV
+        {t('table.exportCsv')}
       </button>
       {children}
     </div>

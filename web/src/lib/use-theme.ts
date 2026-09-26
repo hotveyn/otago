@@ -13,26 +13,36 @@ function darkQuery(): MediaQueryList | null {
   return typeof window.matchMedia === 'function' ? window.matchMedia(DARK_QUERY) : null;
 }
 
-/** The user's theme preference; keeps `data-theme` on <html> and storage in sync. */
-export function useTheme(): { pref: ThemePref; setPref: (pref: ThemePref) => void } {
+/**
+ * The user's theme preference; keeps `data-theme` on <html> and storage in sync. `setPreview`
+ * shows another theme without saving it (`null` goes back to the preference).
+ */
+export function useTheme(): {
+  pref: ThemePref;
+  setPref: (pref: ThemePref) => void;
+  setPreview: (pref: ThemePref | null) => void;
+} {
   const [pref, setPrefState] = useState<ThemePref>(() =>
     parseThemePref(safeStorage.get(THEME_STORAGE_KEY)),
   );
+  const [preview, setPreview] = useState<ThemePref | null>(null);
+  const shown = preview ?? pref;
 
   const setPref = useCallback((next: ThemePref) => {
     setPrefState(next);
+    setPreview(null);
     // No key means auto, so "no preference" and "auto" stay identical.
     safeStorage.set(THEME_STORAGE_KEY, next === 'auto' ? null : next);
   }, []);
 
   useEffect(() => {
     const mql = darkQuery();
-    applyTheme(resolveTheme(pref, mql?.matches ?? false));
-    if (pref !== 'auto' || !mql) return;
+    applyTheme(resolveTheme(shown, mql?.matches ?? false));
+    if (shown !== 'auto' || !mql) return;
     const onChange = (e: MediaQueryListEvent) => applyTheme(resolveTheme('auto', e.matches));
     mql.addEventListener('change', onChange);
     return () => mql.removeEventListener('change', onChange);
-  }, [pref]);
+  }, [shown]);
 
   // Cross-tab sync: another tab changed the preference.
   useEffect(() => {
@@ -45,5 +55,5 @@ export function useTheme(): { pref: ThemePref; setPref: (pref: ThemePref) => voi
     return () => window.removeEventListener('storage', onStorage);
   }, []);
 
-  return { pref, setPref };
+  return { pref, setPref, setPreview };
 }

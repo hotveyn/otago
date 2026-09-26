@@ -1,13 +1,26 @@
 import {
+  type ClipboardEvent,
+  type DragEvent,
   type KeyboardEvent,
   type Ref,
   useEffect,
+  useId,
   useImperativeHandle,
   useLayoutEffect,
   useRef,
+  useState,
 } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 import { useModels } from '../../api/queries';
+import {
+  CHAT_FILE_ACCEPT,
+  type ComposerFile,
+  MAX_MESSAGE_FILES,
+  pastedFilesToAdd,
+  type RejectedFile,
+} from '../../lib/chat-files';
 import { Button } from '../ui/Button';
+import { ComposerFiles } from './ComposerFiles';
 
 export interface ModelChoice {
   model: string | null;
@@ -29,7 +42,17 @@ interface ComposerProps {
   target: string;
   models: ModelChoice;
   onModelsChange: (models: ModelChoice) => void;
+  /** Files waiting for the next send. */
+  files: ComposerFile[];
+  fileErrors: RejectedFile[];
+  onAddFiles: (files: File[]) => void;
+  onRemoveFile: (id: number) => void;
+  onDismissFileErrors: () => void;
+  /** Text or files present and nothing streaming. */
+  canSend: boolean;
 }
+
+const hasFiles = (event: DragEvent) => Array.from(event.dataTransfer.types).includes('Files');
 
 export function Composer({
   ref,
@@ -41,10 +64,22 @@ export function Composer({
   target,
   models,
   onModelsChange,
+  files,
+  fileErrors,
+  onAddFiles,
+  onRemoveFile,
+  onDismissFileErrors,
+  canSend,
 }: ComposerProps) {
+  const { t } = useTranslation('chat');
   const available = useModels();
   const textarea = useRef<HTMLTextAreaElement>(null);
+  const picker = useRef<HTMLInputElement>(null);
   const wantEnd = useRef(false);
+  const dragDepth = useRef(0);
+  const [dragging, setDragging] = useState(false);
+  const hintId = useId();
+  const full = files.length >= MAX_MESSAGE_FILES;
 
   useImperativeHandle(
     ref,
@@ -84,47 +119,126 @@ export function Composer({
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
-      if (!streaming && value.trim()) onSend();
+      if (canSend) onSend();
     }
+  };
+
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const { files: pasted, blockText } = pastedFilesToAdd(event.clipboardData);
+    if (pasted.length === 0) return;
+    if (blockText) event.preventDefault();
+    onAddFiles(pasted);
+  };
+
+  const onDragEnter = (event: DragEvent) => {
+    if (!hasFiles(event)) return;
+    dragDepth.current += 1;
+    setDragging(true);
+  };
+  const onDragLeave = (event: DragEvent) => {
+    if (!hasFiles(event)) return;
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDragging(false);
+  };
+  const onDragOver = (event: DragEvent) => {
+    if (!hasFiles(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = streaming ? 'none' : 'copy';
+  };
+  const onDrop = (event: DragEvent) => {
+    if (!hasFiles(event)) return;
+    event.preventDefault();
+    dragDepth.current = 0;
+    setDragging(false);
+    // No queuing: files dropped while an answer streams are ignored.
+    if (!streaming) onAddFiles(Array.from(event.dataTransfer.files));
   };
 
   const defaults = available.data?.defaults;
   const options = available.data?.models ?? [];
 
   return (
-    <div className="composer">
+    // biome-ignore lint/a11y/noStaticElementInteractions: file drop zone; the Attach button is the keyboard path
+    <div
+      className={dragging ? 'composer composer-drop' : 'composer'}
+      onDragEnter={onDragEnter}
+      onDragLeave={onDragLeave}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
       <div className="composer-target muted small">
         {target ? (
-          <>
-            Reply under <code>{target}</code>
-          </>
+          <Trans
+            t={t}
+            i18nKey="composer.replyUnder"
+            values={{ target }}
+            components={{ code: <code /> }}
+          />
         ) : (
-          'New top-level branch'
+          t('composer.newBranch')
         )}
       </div>
+      <ComposerFiles
+        files={files}
+        errors={fileErrors}
+        onRemove={onRemoveFile}
+        onDismissErrors={onDismissFileErrors}
+        fallbackFocus={textarea}
+        disabled={streaming}
+      />
       <textarea
         ref={textarea}
         className="composer-input"
-        placeholder={
-          streaming
-            ? 'Waiting for the answer…'
-            : 'Ask a question. Enter to send, Shift+Enter for a new line.'
-        }
+        placeholder={streaming ? t('composer.waiting') : t('composer.placeholder')}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
         disabled={streaming}
         rows={2}
+        aria-describedby={hintId}
       />
+      <span id={hintId} className="visually-hidden">
+        {t('composer.dropHint')}
+      </span>
       <div className="composer-bar">
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label={t('composer.attachFiles')}
+          title={
+            full ? t('composer.attachLimit', { max: MAX_MESSAGE_FILES }) : t('composer.attachFiles')
+          }
+          disabled={streaming || full}
+          onClick={() => picker.current?.click()}
+        >
+          {t('composer.attach')}
+        </Button>
+        <input
+          ref={picker}
+          type="file"
+          multiple
+          accept={CHAT_FILE_ACCEPT}
+          hidden
+          onChange={(event) => {
+            const picked = Array.from(event.target.files ?? []);
+            // Reset so picking the same file again fires `change`.
+            event.target.value = '';
+            onAddFiles(picked);
+          }}
+        />
         <label className="model-pick">
-          <span>Answer</span>
+          <span>{t('composer.answerModel')}</span>
           <select
             value={models.model ?? ''}
             onChange={(event) => onModelsChange({ ...models, model: event.target.value || null })}
             disabled={streaming || options.length === 0}
           >
-            <option value="">{defaults ? `default · ${defaults.answer}` : 'default'}</option>
+            <option value="">
+              {defaults
+                ? t('composer.defaultModel', { model: defaults.answer })
+                : t('composer.default')}
+            </option>
             {options.map((model) => (
               <option key={model} value={model}>
                 {model}
@@ -133,7 +247,7 @@ export function Composer({
           </select>
         </label>
         <label className="model-pick">
-          <span>Naming</span>
+          <span>{t('composer.namingModel')}</span>
           <select
             value={models.namingModel ?? ''}
             onChange={(event) =>
@@ -141,7 +255,11 @@ export function Composer({
             }
             disabled={streaming || options.length === 0}
           >
-            <option value="">{defaults ? `default · ${defaults.naming}` : 'default'}</option>
+            <option value="">
+              {defaults
+                ? t('composer.defaultModel', { model: defaults.naming })
+                : t('composer.default')}
+            </option>
             {options.map((model) => (
               <option key={model} value={model}>
                 {model}
@@ -152,11 +270,11 @@ export function Composer({
         <span className="spacer" />
         {streaming ? (
           <Button variant="default" onClick={onStop}>
-            Stop
+            {t('composer.stop')}
           </Button>
         ) : (
-          <Button variant="primary" onClick={onSend} disabled={!value.trim()}>
-            Send
+          <Button variant="primary" onClick={onSend} disabled={!canSend}>
+            {t('composer.send')}
           </Button>
         )}
       </div>

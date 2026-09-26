@@ -1,10 +1,16 @@
-import type { AttachmentInfo, ChainNode } from '../storage/index.js';
+import {
+  type AttachmentInfo,
+  type ChainNode,
+  nodePromptFiles,
+  type PromptFile,
+  type UserFileInfo,
+} from '../storage/index.js';
 
 export const SYSTEM_RULES = `You are a patient tutor inside Otago, a learning app. The user studies a topic through conversation.
 Your working directory is the learning tree. Learning materials live in \`sources/\`.
 
 Rules:
-1. Search \`sources/\` first (Glob, Grep, Read) for every factual claim. E-books (\`.epub\`, \`.fb2\`, \`.fb2.zip\`, \`.mobi\`, \`.azw\`, \`.azw3\`) are binary: search, read and cite their extracted text \`sources/<book file>.md\` instead (e.g. \`sources/rust-book.epub.md\`).
+1. Search \`sources/\` first (Glob, Grep, Read) for every factual claim, unless the user attached files for this question: then read those first. E-books (\`.epub\`, \`.fb2\`, \`.fb2.zip\`, \`.mobi\`, \`.azw\`, \`.azw3\`) are binary: search, read and cite their extracted text \`sources/<book file>.md\` instead (e.g. \`sources/rust-book.epub.md\`).
 2. Cite every fact with a Markdown footnote. A footnote is either \`sources/<file>:<start>-<end>\` (line numbers) or a URL. Example:
    Borrowing lets you reference a value without taking ownership [^1].
 
@@ -21,6 +27,12 @@ Rich output:
 - Never put SVG inline in the answer; save it as a \`.svg\` attachment.
 - Attachments of earlier answers are listed in the transcript and can be read with Read at \`<node-id>/attachments/<name>\`. Do not link to them with \`attachments/…\` (that prefix means the current answer); save a new version instead.
 
+User files:
+- Files the user attached are listed in \`<files>\` blocks: the current message's block right before the question, earlier messages' blocks inside the transcript. Read them with Read at the listed path (images and PDFs included). For e-books the listed path is already the extracted \`.md\` text.
+- The current message's files are the primary material for the question: read them before searching \`sources/\`.
+- Cite a user file like a source: \`files/<name>:<start>-<end>\` for the current message, \`<node-id>/files/<name>:<start>-<end>\` for earlier messages. Never mention the temporary \`.tmp-answer-…\` path in the answer.
+- User files are read-only and are not attachments: never link them with \`attachments/…\`.
+
 Never try to modify files; the only way to create a file is \`save_attachment\`. Answer only with the final answer text in Markdown.`;
 
 export function buildSystemPrompt(instructions: string): string {
@@ -28,18 +40,36 @@ export function buildSystemPrompt(instructions: string): string {
   return trimmed ? `${SYSTEM_RULES}\n\n# Tree instructions\n\n${trimmed}` : SYSTEM_RULES;
 }
 
-/** Serialize previous exchanges + the new question into one user prompt. */
+function filesBlock(files: PromptFile[]): string {
+  const lines = files.map((file) =>
+    file.bookOf
+      ? `${file.path} (text extracted from ${file.bookOf}, ${file.size} bytes)`
+      : `${file.path} (${file.kind}, ${file.size} bytes)`,
+  );
+  return `<files>\n${lines.join('\n')}\n</files>`;
+}
+
+/** Serialize previous exchanges + the new question (and its files) into one user prompt. */
 export function buildUserPrompt(
   chain: Array<
-    Pick<ChainNode, 'user' | 'assistant'> & { id?: string; attachments?: AttachmentInfo[] }
+    Pick<ChainNode, 'user' | 'assistant'> & {
+      id?: string;
+      attachments?: AttachmentInfo[];
+      files?: UserFileInfo[];
+    }
   >,
   question: string,
+  files: PromptFile[] = [],
 ): string {
   const parts: string[] = [];
   if (chain.length > 0) {
     parts.push('<transcript>');
     for (const node of chain) {
-      parts.push(`<user>\n${node.user}\n</user>`, `<assistant>\n${node.assistant}\n</assistant>`);
+      parts.push(`<user>\n${node.user}\n</user>`);
+      if (node.id && node.files && node.files.length > 0) {
+        parts.push(filesBlock(nodePromptFiles(node.id, node.files)));
+      }
+      parts.push(`<assistant>\n${node.assistant}\n</assistant>`);
       if (node.id && node.attachments && node.attachments.length > 0) {
         const lines = node.attachments.map(
           (file) => `${node.id}/attachments/${file.name} (${file.kind}, ${file.size} bytes)`,
@@ -49,6 +79,7 @@ export function buildUserPrompt(
     }
     parts.push('</transcript>', '', 'Continue the conversation above. New question:');
   }
+  if (files.length > 0) parts.push(filesBlock(files));
   parts.push(question.trim());
   return parts.join('\n');
 }

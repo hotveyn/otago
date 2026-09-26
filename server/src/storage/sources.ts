@@ -11,6 +11,9 @@ import {
 import { isErrno, writeFileAtomic } from './fs-utils.js';
 import { resolveInside, SOURCES_DIR } from './paths.js';
 
+/** Max size of one uploaded source file. */
+export const MAX_SOURCE_BYTES = 20 * 1024 * 1024;
+
 export const TEXT_SOURCE_EXTENSIONS = ['.md', '.txt', '.pdf'] as const;
 export const SOURCE_EXTENSIONS = [...TEXT_SOURCE_EXTENSIONS, ...EBOOK_EXTENSIONS];
 
@@ -105,7 +108,7 @@ export async function saveSource(
 ): Promise<SourceInfo> {
   const target = sourcePath(treeDir, name);
   const text = ebookExtensionOf(name) ? ebookTextName(name) : undefined;
-  const markdown = text ? extractEbookText(name, content) : undefined;
+  const markdown = text ? extractEbookText(name, content, `${SOURCES_DIR}/${name}`) : undefined;
   await mkdir(path.dirname(target), { recursive: true });
   if (text && markdown !== undefined) {
     await writeFileAtomic(sourcePath(treeDir, text), markdown);

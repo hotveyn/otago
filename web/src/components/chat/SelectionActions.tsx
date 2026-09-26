@@ -1,5 +1,6 @@
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useTranslation } from 'react-i18next';
 import { type Box, placePopup } from '../../lib/popup-position';
 import { isQuotable } from '../../lib/quote';
 
@@ -56,6 +57,7 @@ function readSelection(container: HTMLElement | null): Shown | null {
 
 /** A floating toolbar over a text selection inside `container`. */
 export function SelectionActions({ container, actions, resetKey }: SelectionActionsProps) {
+  const { t } = useTranslation('chat');
   const [shown, setShown] = useState<Shown | null>(null);
   const [size, setSize] = useState(FALLBACK_SIZE);
   const popup = useRef<HTMLDivElement>(null);
@@ -162,7 +164,7 @@ export function SelectionActions({ container, actions, resetKey }: SelectionActi
       ref={popup}
       className="selection-actions"
       role="toolbar"
-      aria-label="Selection actions"
+      aria-label={t('selectionActions')}
       style={{ top, left }}
     >
       {actions.map((action) => (

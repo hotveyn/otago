@@ -1,0 +1,22 @@
+{
+  "slug": "ui-themes",
+  "title": "UI color themes (Standard, Dark, Cool light)",
+  "created": "2026-09-24T00:00:00Z",
+  "workspace_root": "/Users/ioannshestopalov/Programming/otago",
+  "contracts": {
+    "owner": null,
+    "generated": false
+  },
+  "projects": [
+    {
+      "name": "web",
+      "root": "web",
+      "manifest": "package.json",
+      "stack": "node (React 19 + Vite + TypeScript)",
+      "role": "standalone",
+      "stage": "implemented"
+    }
+  ],
+  "archived": "2026-09-26T08:28:45Z",
+  "archived_to": ".claude/features/archive/26-09-2026/ui-themes"
+}

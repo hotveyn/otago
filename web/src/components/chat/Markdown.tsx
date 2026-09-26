@@ -1,5 +1,6 @@
 import type { Element, ElementContent } from 'hast';
 import { createContext, memo, type ReactNode, useContext, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
@@ -80,10 +81,11 @@ function SourceLink({ view, children }: { view: SourceView; children: ReactNode 
 }
 
 function CitationList({ citations }: { citations: Citation[] }) {
+  const { t } = useTranslation(['common', 'chat']);
   const openSource = useOpenSource();
   return (
     <aside className="citations">
-      <h4>Sources</h4>
+      <h4>{t('chat:citations.heading')}</h4>
       <ol>
         {citations.map((citation) => {
           const { target } = citation;
@@ -101,8 +103,8 @@ function CitationList({ citations }: { citations: Citation[] }) {
                   {target.start !== undefined && (
                     <span className="cite-lines">
                       {target.end && target.end !== target.start
-                        ? `lines ${target.start}–${target.end}`
-                        : `line ${target.start}`}
+                        ? t('lines', { start: target.start, end: target.end })
+                        : t('line', { start: target.start })}
                     </span>
                   )}
                 </button>

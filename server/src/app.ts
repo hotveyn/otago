@@ -16,8 +16,10 @@ import { modelRoutes } from './routes/models.js';
 import { nodeRoutes } from './routes/nodes.js';
 import { sourceRoutes } from './routes/sources.js';
 import { treeRoutes } from './routes/trees.js';
+import { userFileRoutes } from './routes/user-files.js';
+import { MAX_SOURCE_BYTES } from './storage/index.js';
 
-export const MAX_SOURCE_BYTES = 20 * 1024 * 1024;
+export { MAX_SOURCE_BYTES };
 
 export interface AppDeps {
   treesDir: string;
@@ -47,7 +49,11 @@ export async function buildApp(deps: AppDeps) {
       return reply.code(400).send({ error: 'Invalid input', details: error.validation });
     }
     if (error instanceof AppError) {
-      return reply.code(error.statusCode).send({ error: error.message });
+      return reply.code(error.statusCode).send({
+        error: error.message,
+        ...(error.code ? { code: error.code } : {}),
+        ...(error.details !== undefined ? { details: error.details } : {}),
+      });
     }
     const statusCode = error.statusCode ?? 500;
     if (statusCode < 500) return reply.code(statusCode).send({ error: error.message });
@@ -73,6 +79,7 @@ export async function buildApp(deps: AppDeps) {
       await api.register(messageRoutes, routeDeps);
       await api.register(nodeRoutes, routeDeps);
       await api.register(attachmentRoutes, routeDeps);
+      await api.register(userFileRoutes, routeDeps);
     },
     { prefix: '/api' },
   );

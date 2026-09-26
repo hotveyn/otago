@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { type DragEvent, useRef, useState } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
 import { keys, useSources } from '../../api/queries';
 import type { SourceInfo } from '../../api/types';
@@ -16,6 +17,7 @@ export function formatSize(bytes: number): string {
 }
 
 export function SourcesPanel({ treeId }: { treeId: string }) {
+  const { t } = useTranslation(['sidebar', 'common']);
   const queryClient = useQueryClient();
   const sources = useSources(treeId);
   const openSource = useOpenSource();
@@ -63,14 +65,14 @@ export function SourcesPanel({ treeId }: { treeId: string }) {
       onDrop={onDrop}
     >
       <header className="panel-header">
-        <h3>Sources</h3>
+        <h3>{t('sources.title')}</h3>
         <Button
           size="sm"
           variant="ghost"
           onClick={() => input.current?.click()}
           disabled={upload.isPending}
         >
-          {upload.isPending ? 'Uploading…' : '+ Upload'}
+          {upload.isPending ? t('sources.uploading') : t('sources.upload')}
         </Button>
         <input
           ref={input}
@@ -89,12 +91,7 @@ export function SourcesPanel({ treeId }: { treeId: string }) {
         error={upload.error ?? sources.error}
         onDismiss={upload.error ? upload.reset : undefined}
       />
-      {sources.data?.length === 0 && (
-        <p className="muted small">
-          Drop .md, .txt, .pdf or e-book files (.epub, .fb2, .mobi, .azw3) here. Without sources,
-          answers come from the web.
-        </p>
-      )}
+      {sources.data?.length === 0 && <p className="muted small">{t('sources.empty')}</p>}
       <ul className="list">
         {sources.data?.map((source) => (
           <li key={source.name} className="source-row">
@@ -102,7 +99,7 @@ export function SourcesPanel({ treeId }: { treeId: string }) {
               type="button"
               className="list-item source-name"
               onClick={() => openSource({ file: source.text ?? source.name })}
-              title={`Open ${source.name}`}
+              title={t('sources.open', { name: source.name })}
             >
               <span className="file-badge">{formatLabel(source.name)}</span>
               <span className="truncate">{source.name}</span>
@@ -111,7 +108,7 @@ export function SourcesPanel({ treeId }: { treeId: string }) {
             <button
               type="button"
               className="icon-btn row-action"
-              aria-label={`Delete ${source.name}`}
+              aria-label={t('sources.deleteLabel', { name: source.name })}
               onClick={() => setPendingDelete(source)}
             >
               ×
@@ -122,7 +119,7 @@ export function SourcesPanel({ treeId }: { treeId: string }) {
 
       <Dialog
         open={pendingDelete !== null}
-        title="Delete source"
+        title={t('sources.deleteTitle')}
         onClose={() => {
           setPendingDelete(null);
           remove.reset();
@@ -130,21 +127,25 @@ export function SourcesPanel({ treeId }: { treeId: string }) {
         footer={
           <>
             <Button variant="ghost" onClick={() => setPendingDelete(null)}>
-              Cancel
+              {t('common:cancel')}
             </Button>
             <Button
               variant="danger"
               disabled={remove.isPending}
               onClick={() => pendingDelete && remove.mutate(pendingDelete.name)}
             >
-              Delete
+              {t('common:delete')}
             </Button>
           </>
         }
       >
         <p>
-          Delete <strong>{pendingDelete?.name}</strong> from <code>sources/</code>? Existing
-          citations to it will stop resolving.
+          <Trans
+            t={t}
+            i18nKey="sources.deleteConfirm"
+            values={{ name: pendingDelete?.name }}
+            components={{ strong: <strong />, code: <code /> }}
+          />
         </p>
         <ErrorNote error={remove.error} />
       </Dialog>

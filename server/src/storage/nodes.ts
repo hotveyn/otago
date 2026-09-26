@@ -3,7 +3,7 @@ import path from 'node:path';
 import { InvalidInputError, NotFoundError } from '../errors.js';
 import { type AttachmentInfo, listAttachments } from './attachments.js';
 import { type NodeFile, parseNodeFile, serializeNodeFile } from './format.js';
-import { createDirAtomic, exists, isErrno, uniqueName } from './fs-utils.js';
+import { claimUniqueName, createDirAtomic, exists, isErrno } from './fs-utils.js';
 import {
   isSameOrDescendant,
   isSlug,
@@ -17,6 +17,7 @@ import {
   reservedNamesFor,
   toKebabCase,
 } from './paths.js';
+import { listUserFiles, type UserFileInfo } from './user-files.js';
 
 export interface HierarchyNode {
   id: string;
@@ -30,6 +31,8 @@ export interface ChainNode extends NodeFile {
   name: string;
   /** Files in `<node>/attachments/`, sorted by name. */
   attachments: AttachmentInfo[];
+  /** Files in `<node>/files/` (user uploads), sorted by name. */
+  files: UserFileInfo[];
 }
 
 /** All nodes of a tree, siblings sorted by `created`. */
@@ -67,7 +70,13 @@ export async function readChain(treeDir: string, nodeId: string): Promise<ChainN
     const nodeDir = nodeDirOf(treeDir, id);
     const node = await readNodeFileIfExists(nodeDir);
     if (!node) throw new NotFoundError(`Node not found: ${nodeId}`);
-    chain.push({ id, name, ...node, attachments: await listAttachments(nodeDir) });
+    chain.push({
+      id,
+      name,
+      ...node,
+      attachments: await listAttachments(nodeDir),
+      files: await listUserFiles(nodeDir),
+    });
   }
   return chain;
 }
@@ -84,7 +93,7 @@ export async function assertNodeExists(treeDir: string, nodeId: string): Promise
 export interface CreateNodeOptions {
   /**
    * Prepared folder inside the parent folder (e.g. an answer staging folder with
-   * `attachments/`). `node.md` is written into it and the folder is renamed into place.
+   * `attachments/` and the user's `files/`). `node.md` is written into it and the folder is renamed into place.
    * On failure it is left as is; the caller discards it.
    */
   stagingDir?: string;
@@ -105,15 +114,22 @@ export async function createNode(
   const content = serializeNodeFile(node);
   const { stagingDir } = options;
   if (stagingDir) await writeFile(path.join(stagingDir, NODE_FILE), content, 'utf8');
-  // Retry if a sibling with the same name appears between the check and the rename.
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const name = await uniqueName(parentDir, base, reserved);
+  // Names are claimed in-process, so concurrent creations under one parent never pick the
+  // same name. No-overwrite invariant: `node.md` is always in the source folder (staging dir
+  // or `createDirAtomic` temp dir) before the rename, so a rename onto an existing non-empty
+  // folder fails (EEXIST/ENOTEMPTY) instead of replacing it. The retry covers other
+  // processes and external writers.
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const { name, release } = await claimUniqueName(parentDir, base, reserved);
     try {
       if (stagingDir) await rename(stagingDir, path.join(parentDir, name));
       else await createDirAtomic(parentDir, name, { [NODE_FILE]: content });
       return joinId(parentId, name);
     } catch (error) {
       if (!isErrno(error, 'EEXIST', 'ENOTEMPTY')) throw error;
+    } finally {
+      // After a successful rename the name is visible to `readdir`; the claim is not needed.
+      release();
     }
   }
   throw new Error(`Could not create node under "${parentId}"`);
@@ -166,8 +182,12 @@ export async function moveNodes(
       continue;
     }
     const base = id.slice(id.lastIndexOf('/') + 1);
-    const name = await uniqueName(targetDir, base, reserved);
-    await rename(nodeDirOf(treeDir, id), path.join(targetDir, name));
+    const { name, release } = await claimUniqueName(targetDir, base, reserved);
+    try {
+      await rename(nodeDirOf(treeDir, id), path.join(targetDir, name));
+    } finally {
+      release();
+    }
     moved[id] = joinId(targetParentId, name);
   }
   return moved;

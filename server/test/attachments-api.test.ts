@@ -102,6 +102,7 @@ describe('answers with attachments', () => {
         { name: 'memory-layout.svg', size: svg.length, contentType: 'image/svg+xml', kind: 'svg' },
         { name: 'pic.png', size: png.length, contentType: 'image/png', kind: 'image' },
       ],
+      files: [],
     });
 
     const nodeDir = path.join(treeDir(), 'layout');
@@ -152,7 +153,10 @@ describe('answers with attachments', () => {
         message: 'Empty content',
       },
     ]);
-    expect(events.at(-1)).toEqual({ event: 'done', data: { nodeId: 'plain', attachments: [] } });
+    expect(events.at(-1)).toEqual({
+      event: 'done',
+      data: { nodeId: 'plain', attachments: [], files: [] },
+    });
     expect(await readdir(path.join(treeDir(), 'plain'))).toEqual(['node.md']);
   });
 
@@ -213,6 +217,7 @@ describe('answers with attachments', () => {
       attachments: [
         { name: 'attachment.png', size: png.length, contentType: 'image/png', kind: 'image' },
       ],
+      files: [],
     });
   });
 
@@ -226,7 +231,10 @@ describe('answers with attachments', () => {
       status: 'failed',
       message: expect.stringContaining('Blocked private address'),
     });
-    expect(events.at(-1)).toEqual({ event: 'done', data: { nodeId: 'img', attachments: [] } });
+    expect(events.at(-1)).toEqual({
+      event: 'done',
+      data: { nodeId: 'img', attachments: [], files: [] },
+    });
   });
 
   it('chain lists attachments and passes them to follow-up questions', async () => {

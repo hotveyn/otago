@@ -39,8 +39,15 @@ export function ebookTextName(name: string): string {
   return `${name}${EBOOK_TEXT_SUFFIX}`;
 }
 
-/** Extract the book as one Markdown document. Throws `InvalidInputError` for bad files. */
-export function extractEbookText(name: string, data: Uint8Array): string {
+/**
+ * Extract the book as one Markdown document. Throws `InvalidInputError` for bad files.
+ * `label` is the tree-relative path named in the header comment.
+ */
+export function extractEbookText(
+  name: string,
+  data: Uint8Array,
+  label = `sources/${name}`,
+): string {
   const format = FORMATS[ebookExtensionOf(name) ?? ''];
   if (!format) throw new InvalidInputError(`Not an e-book: ${name}`);
   let book: Ebook;
@@ -54,7 +61,7 @@ export function extractEbookText(name: string, data: Uint8Array): string {
   if (book.parts.length === 0) {
     throw new InvalidInputError(`Cannot read ${name}: no text found (scanned or image-only book?)`);
   }
-  const header = [`<!-- Text extracted by Otago from sources/${name} -->`];
+  const header = [`<!-- Text extracted by Otago from ${label} -->`];
   if (book.title) header.push(`# ${book.title}`);
   if (book.authors.length > 0) header.push(`*${book.authors.join(', ')}*`);
   return `${[...header, ...book.parts].join('\n\n')}\n`;

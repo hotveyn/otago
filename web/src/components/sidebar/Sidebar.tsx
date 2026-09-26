@@ -1,4 +1,6 @@
+import { useTranslation } from 'react-i18next';
 import type { TreeDetail, TreeMeta } from '../../api/types';
+import { LanguageSwitcher } from './LanguageSwitcher';
 import { SourcesPanel } from './SourcesPanel';
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { TreeList } from './TreeList';
@@ -23,13 +25,14 @@ export function Sidebar({
   currentTreeId,
   onSelectTree,
 }: SidebarProps) {
+  const { t } = useTranslation('sidebar');
   return (
     <aside className={collapsed ? 'sidebar sidebar-collapsed' : 'sidebar'}>
       <div className="sidebar-top">
         {!collapsed && (
           <div className="brand">
             <span className="brand-mark">Otago</span>
-            <span className="brand-sub">learning trees</span>
+            <span className="brand-sub">{t('brandSub')}</span>
           </div>
         )}
         <button
@@ -38,8 +41,8 @@ export function Sidebar({
           onClick={onToggle}
           aria-expanded={!collapsed}
           aria-controls="sidebar-body"
-          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          title={`${collapsed ? 'Expand' : 'Collapse'} sidebar (Ctrl/⌘+B)`}
+          aria-label={collapsed ? t('expand') : t('collapse')}
+          title={collapsed ? t('expandHint') : t('collapseHint')}
         >
           <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
             <rect
@@ -78,6 +81,7 @@ export function Sidebar({
         )}
         <div className="sidebar-footer">
           <ThemeSwitcher />
+          <LanguageSwitcher />
         </div>
       </div>
     </aside>

@@ -1,0 +1,21 @@
+export const common = {
+  loading: 'Loading…',
+  cancel: 'Cancel',
+  create: 'Create',
+  delete: 'Delete',
+  close: 'Close',
+  dismiss: 'Dismiss',
+  download: 'Download',
+  preview: 'Preview',
+  source: 'Source',
+  root: 'root',
+  line: 'line {{start}}',
+  lines: 'lines {{start}}–{{end}}',
+  errors: {
+    busyStructural: 'Nodes are being moved or deleted. Try again in a moment.',
+    busyStreaming: 'An answer is still streaming. Try again when it finishes.',
+    nodeMissing: 'The node this side chat branches from no longer exists (moved or deleted).',
+    emptyResponse: 'Empty response',
+    streamEnded: 'Stream ended without an answer',
+  },
+};

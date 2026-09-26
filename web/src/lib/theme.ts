@@ -1,10 +1,7 @@
 /** Theme ids, preference parsing and resolution. Pure: no React. */
 
-export const THEMES = [
-  { id: 'standard', label: 'Standard', title: 'Standard' },
-  { id: 'dark', label: 'Dark', title: 'Dark' },
-  { id: 'cool', label: 'Cool', title: 'Cool light' },
-] as const;
+/** Labels live in the `sidebar:theme.*` translations (see ThemeSwitcher). */
+export const THEMES = [{ id: 'standard' }, { id: 'dark' }, { id: 'cool' }] as const;
 
 export type ThemeId = (typeof THEMES)[number]['id'];
 export type ThemePref = 'auto' | ThemeId;

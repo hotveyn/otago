@@ -1,5 +1,7 @@
 /** Lazy, serialized Mermaid rendering. `mermaid` is loaded with a dynamic import (own chunk). */
+
 import type { Mermaid } from 'mermaid';
+import { i18n } from '../i18n';
 
 let loading: Promise<Mermaid> | null = null;
 let initializedFor: string | null = null;
@@ -124,5 +126,7 @@ export function renderMermaid(source: string): Promise<string> {
 /** First line of a parser/render error, for the inline note. */
 export function mermaidErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  return message.split('\n').find((line) => line.trim() !== '') ?? 'Could not render diagram';
+  return (
+    message.split('\n').find((line) => line.trim() !== '') ?? i18n.t('chat:code.diagramFailed')
+  );
 }

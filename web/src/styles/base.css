@@ -146,6 +146,21 @@ h4 {
   overflow: hidden;
 }
 
+/* Side chat open: sidebar | graph | main chat | side chat. The main chat is no longer at
+   the right edge, so both chat panes centre their reading column inside the pane. */
+.app.app-side-open {
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr) var(--chat-w) var(--side-w);
+}
+
+.app-side-open .chat-pane {
+  --chat-pad-l: max(var(--chat-gutter), calc((var(--chat-w) - var(--chat-col)) / 2));
+  --chat-pad-r: var(--chat-pad-l);
+}
+
+.side-pane {
+  --chat-w: var(--side-w);
+}
+
 .splitter {
   position: absolute;
   top: 0;
@@ -199,6 +214,14 @@ h4 {
     border-left: 0;
     border-top: 1px solid var(--line);
   }
+  .app.app-side-open {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 50vh auto auto;
+  }
+  .app-side-open .chat-pane {
+    --chat-pad-l: var(--chat-gutter);
+    --chat-pad-r: var(--chat-gutter);
+  }
   .splitter {
     display: none;
   }
@@ -226,6 +249,8 @@ h4 {
 }
 
 .sidebar-footer {
+  display: grid;
+  gap: 6.4px;
   margin-top: auto;
   position: sticky;
   bottom: -25.6px;
@@ -247,7 +272,9 @@ h4 {
 }
 
 .theme-switch {
-  display: flex;
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
   margin: 0;
   padding: 0;
   min-width: 0;
@@ -258,8 +285,8 @@ h4 {
 }
 
 .theme-switch-option {
-  flex: 1;
   display: flex;
+  min-width: 0;
 }
 
 .theme-switch-option + .theme-switch-option {
@@ -268,8 +295,12 @@ h4 {
 
 .theme-switch label {
   flex: 1;
-  padding: 3.2px 0;
+  min-width: 0;
+  padding: 3.2px 4px;
   font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text-soft);
   text-align: center;
   cursor: pointer;
@@ -288,6 +319,236 @@ h4 {
 .theme-switch input:focus-visible + label {
   outline: 1.6px solid var(--accent);
   outline-offset: -1.6px;
+}
+
+/* Swatch: a miniature window (sidebar strip, text line, accent line, select dot). */
+.theme-swatch {
+  position: relative;
+  flex: none;
+  display: flex;
+  width: var(--swatch-w, 20px);
+  height: var(--swatch-h, 13.6px);
+  border: 1px solid var(--line-strong);
+  border-radius: calc(var(--radius) * 1.3);
+  background: var(--bg);
+  overflow: hidden;
+  transition: transform 160ms ease;
+}
+
+.theme-swatch-side {
+  width: 30%;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+}
+
+.theme-swatch-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 18%;
+  padding: 0 16%;
+}
+
+.theme-swatch-line {
+  height: 1.6px;
+  border-radius: 1px;
+  background: var(--text);
+  opacity: 0.75;
+}
+
+.theme-swatch-accent {
+  width: 60%;
+  height: 2.4px;
+  background: var(--accent);
+  opacity: 1;
+}
+
+.theme-swatch-dot {
+  position: absolute;
+  right: 12%;
+  bottom: 14%;
+  width: 16%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: var(--select);
+}
+
+/* Auto: Standard and Dark stacked, Dark clipped to the lower-right triangle. */
+.theme-swatch-auto {
+  flex: none;
+  display: inline-grid;
+}
+
+.theme-swatch-auto > .theme-swatch {
+  grid-area: 1 / 1;
+}
+
+.theme-swatch-auto > .theme-swatch + .theme-swatch {
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+}
+
+.theme-picker {
+  display: flex;
+  align-items: center;
+  gap: 4.8px;
+  min-width: 0;
+  font-size: 10.4px;
+  color: var(--muted);
+}
+
+.theme-picker-field {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.theme-picker-button {
+  display: flex;
+  align-items: center;
+  gap: 6.4px;
+  width: 100%;
+  min-width: 0;
+  padding: 3.2px 4.8px;
+  font-size: 10.4px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-soft);
+  cursor: pointer;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease;
+}
+
+.theme-picker-button:hover,
+.theme-picker-button[aria-expanded="true"] {
+  border-color: var(--accent-line);
+}
+
+.theme-picker-button:focus-visible {
+  outline: 1.6px solid var(--accent);
+  outline-offset: -1.6px;
+}
+
+.theme-picker-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.theme-picker-chevron,
+.theme-picker-check {
+  flex: none;
+  width: 11.2px;
+  height: 11.2px;
+  stroke-width: 1.4px;
+}
+
+.theme-picker-chevron {
+  color: var(--muted);
+  transform: rotate(180deg);
+  transition: transform 160ms ease;
+}
+
+.theme-picker-button[aria-expanded="true"] .theme-picker-chevron {
+  transform: none;
+}
+
+/* Opens upward: the picker lives in the sticky sidebar footer. */
+.theme-picker-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6.4px);
+  left: 0;
+  z-index: 30;
+  min-width: 160px;
+  padding: 3.2px;
+  border: 1px solid var(--line-strong);
+  border-radius: calc(var(--radius) * 2);
+  background: var(--surface);
+  box-shadow: var(--shadow-dialog);
+  transform-origin: bottom center;
+  animation: theme-picker-in 140ms ease-out;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+@keyframes theme-picker-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+
+.theme-picker-list {
+  display: grid;
+  gap: 1.6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  outline: none;
+}
+
+.theme-picker-option {
+  --swatch-w: 32px;
+  --swatch-h: 21px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4.8px 6.4px;
+  border-radius: var(--radius);
+  font-size: 11.2px;
+  color: var(--text-soft);
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background-color 120ms ease,
+    color 160ms ease;
+}
+
+.theme-picker-option[data-active] {
+  background: var(--tint-3);
+  color: var(--text);
+}
+
+.theme-picker-list:focus-visible .theme-picker-option[data-active] {
+  box-shadow: inset 0 0 0 1.6px var(--accent-line);
+}
+
+.theme-picker-option[aria-selected="true"] {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.theme-picker-option[data-active] .theme-swatch {
+  transform: scale(1.06);
+}
+
+.theme-picker-hint {
+  margin: 3.2px 0 0;
+  padding: 4.8px 6.4px 3.2px;
+  border-top: 1px solid var(--line);
+  font-size: 9.6px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-picker-popover {
+    animation: none;
+  }
+
+  .theme-picker-chevron,
+  .theme-swatch {
+    transition: none;
+  }
 }
 
 .panel {
@@ -720,6 +981,28 @@ select:focus {
   min-height: 39.2px;
 }
 
+.side-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6.4px;
+}
+
+.side-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.side-actions {
+  display: flex;
+  align-items: center;
+  gap: 4.8px;
+  flex: none;
+}
+
 .crumbs {
   display: flex;
   flex-wrap: wrap;
@@ -863,6 +1146,19 @@ select:focus {
   margin-bottom: 0.6em;
 }
 
+.msg-user .user-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4.8px;
+}
+
+.msg-user .md + .user-files {
+  margin-top: 6.4px;
+}
+
 .msg-assistant {
   font-size: 13.2px;
 }
@@ -930,6 +1226,69 @@ select:focus {
   display: flex;
   align-items: center;
   gap: 9.6px;
+}
+
+.composer-drop {
+  outline: 1px dashed var(--accent-line);
+  outline-offset: -4.8px;
+  background: var(--accent-soft);
+}
+
+.composer-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4.8px;
+}
+
+.composer-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 4.8px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 1.6px 1.6px 1.6px 4.8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  font-size: 11.2px;
+}
+
+.composer-file-name {
+  min-width: 0;
+  max-width: 192px;
+  font-weight: 600;
+}
+
+.composer-file-thumb {
+  flex: none;
+  width: 22.4px;
+  height: 22.4px;
+  object-fit: cover;
+  border-radius: 1.6px;
+  border: 1px solid var(--line);
+}
+
+.composer-file-errors {
+  display: flex;
+  align-items: flex-start;
+  gap: 6.4px;
+  padding: 3.2px 4.8px 3.2px 8px;
+  border: 1px solid var(--danger-note-line);
+  border-radius: var(--radius);
+  color: var(--danger);
+  font-size: 11.2px;
+}
+
+.composer-file-errors ul {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-wrap: anywhere;
 }
 
 .model-pick {
@@ -1134,6 +1493,18 @@ select:focus {
 
 .attachment-failed {
   border-color: var(--danger-note-line);
+}
+
+.user-file-pending .attachment-status {
+  animation: attachment-pulse 1.4s ease-in-out infinite;
+}
+
+.user-file-unsaved {
+  border-color: var(--danger-note-line);
+}
+
+.user-file-unsaved .attachment-status {
+  animation: none;
 }
 
 @keyframes attachment-pulse {

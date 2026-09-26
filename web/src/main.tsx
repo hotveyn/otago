@@ -6,6 +6,7 @@ import './styles/themes.css';
 import './styles/base.css';
 import './styles/markdown.css';
 import './styles/graph.css';
+import './i18n';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';

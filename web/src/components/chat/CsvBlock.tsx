@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { parseCsv } from '../../lib/csv';
 import { CodeFrame, SourcePre, ViewToggle } from './CodeFrame';
 import { DataTable } from './DataTable';
@@ -12,6 +13,7 @@ interface CsvBlockProps {
 
 /** ```csv / ```tsv fenced block rendered as a sortable, filterable table. */
 export function CsvBlock({ source, delimiter, closed }: CsvBlockProps) {
+  const { t } = useTranslation(['chat', 'common']);
   const [showSource, setShowSource] = useState(false);
   const parsed = useMemo(
     () => (closed ? parseCsv(source, delimiter) : null),
@@ -24,9 +26,7 @@ export function CsvBlock({ source, delimiter, closed }: CsvBlockProps) {
     return (
       <CodeFrame label={label} copyText={copyText}>
         <SourcePre source={source} />
-        <p className="code-note muted">
-          {closed ? 'Could not parse as CSV' : 'Table renders when complete'}
-        </p>
+        <p className="code-note muted">{closed ? t('code.csvError') : t('code.tablePending')}</p>
       </CodeFrame>
     );
   }
@@ -37,7 +37,11 @@ export function CsvBlock({ source, delimiter, closed }: CsvBlockProps) {
       copyText={copyText}
       className="csv-block"
       actions={
-        <ViewToggle labels={['Table', 'Source']} source={showSource} onChange={setShowSource} />
+        <ViewToggle
+          labels={[t('code.table'), t('common:source')]}
+          source={showSource}
+          onChange={setShowSource}
+        />
       }
     >
       {showSource ? (

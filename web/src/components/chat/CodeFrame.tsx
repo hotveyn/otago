@@ -1,6 +1,8 @@
 import { type ReactNode, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 export function CopyButton({ text }: { text: () => string }) {
+  const { t } = useTranslation('chat');
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
@@ -13,7 +15,7 @@ export function CopyButton({ text }: { text: () => string }) {
   };
   return (
     <button type="button" className="code-copy" onClick={copy}>
-      {copied ? 'Copied' : 'Copy'}
+      {copied ? t('code.copied') : t('code.copy')}
     </button>
   );
 }

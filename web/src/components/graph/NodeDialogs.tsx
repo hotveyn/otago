@@ -1,5 +1,7 @@
 import { useState } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 import type { HierarchyNode } from '../../api/types';
+import { describeError } from '../../lib/chat-errors';
 import { canMoveTo, countWithDescendants, flatten, parentIdOf, topLevelIds } from '../../lib/tree';
 import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
@@ -24,35 +26,37 @@ export function DeleteDialog({
   onConfirm,
   onClose,
 }: DeleteDialogProps) {
+  const { t } = useTranslation(['graph', 'common']);
   const top = topLevelIds(selection);
   const total = countWithDescendants(nodes, selection);
   const descendants = total - top.length;
   return (
     <Dialog
       open={open}
-      title={top.length === 1 ? 'Delete node' : `Delete ${top.length} nodes`}
+      title={t('delete.title', { count: top.length })}
       onClose={onClose}
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
-            Cancel
+            {t('common:cancel')}
           </Button>
           <Button variant="danger" onClick={onConfirm} disabled={pending}>
-            {pending ? 'Deleting…' : `Delete ${total}`}
+            {pending ? t('delete.deleting') : t('delete.confirm', { count: total })}
           </Button>
         </>
       }
     >
       <p>
-        This permanently removes <strong>{total}</strong> {total === 1 ? 'node' : 'nodes'}
-        {descendants > 0 && (
-          <>
-            {' '}
-            ({top.length} selected + {descendants}{' '}
-            {descendants === 1 ? 'descendant' : 'descendants'})
-          </>
-        )}
-        . Git is the only backup.
+        <Trans
+          t={t}
+          i18nKey={descendants > 0 ? 'delete.bodyNested' : 'delete.body'}
+          count={total}
+          values={{
+            selected: top.length,
+            descendants: t('delete.descendants', { count: descendants }),
+          }}
+          components={{ strong: <strong /> }}
+        />
       </p>
       <ul className="id-list">
         {top.map((id) => (
@@ -61,7 +65,7 @@ export function DeleteDialog({
           </li>
         ))}
       </ul>
-      <ErrorNote error={error} />
+      <ErrorNote error={error} message={describeError(error).message} />
     </Dialog>
   );
 }
@@ -87,6 +91,7 @@ export function MoveDialog({
   onConfirm,
   onClose,
 }: MoveDialogProps) {
+  const { t } = useTranslation(['graph', 'common']);
   const [target, setTarget] = useState<string | null>(null);
   const top = topLevelIds(selection);
   const alreadyThere = (id: string) => top.every((selected) => parentIdOf(selected) === id);
@@ -106,24 +111,24 @@ export function MoveDialog({
     <Dialog
       open={open}
       wide
-      title={top.length === 1 ? 'Move node' : `Move ${top.length} nodes`}
+      title={t('move.title', { count: top.length })}
       onClose={close}
       footer={
         <>
           <Button variant="ghost" onClick={close}>
-            Cancel
+            {t('common:cancel')}
           </Button>
           <Button
             variant="primary"
             disabled={target === null || pending}
             onClick={() => target !== null && onConfirm(target)}
           >
-            {pending ? 'Moving…' : 'Move here'}
+            {pending ? t('move.moving') : t('move.confirm')}
           </Button>
         </>
       }
     >
-      <p className="muted small">Choose the new parent. Descendants move along.</p>
+      <p className="muted small">{t('move.hint')}</p>
       <ul className="target-list">
         {options.map((option) => {
           const valid = canMoveTo(selection, option.id) && !alreadyThere(option.id);
@@ -149,7 +154,7 @@ export function MoveDialog({
           );
         })}
       </ul>
-      <ErrorNote error={error} />
+      <ErrorNote error={error} message={describeError(error).message} />
     </Dialog>
   );
 }
