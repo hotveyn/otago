@@ -12,7 +12,7 @@ import {
 } from '../storage/index.js';
 import { nodeId, treeInput, treeParams, treePatch } from './schemas.js';
 
-export const treeRoutes: FastifyPluginAsyncZod<RouteDeps> = async (app, { treesDir }) => {
+export const treeRoutes: FastifyPluginAsyncZod<RouteDeps> = async (app, { treesDir, locks }) => {
   app.get('/trees', async () => ({ trees: await listTrees(treesDir) }));
 
   app.post('/trees', { schema: { body: treeInput } }, async (request, reply) => {
@@ -26,8 +26,21 @@ export const treeRoutes: FastifyPluginAsyncZod<RouteDeps> = async (app, { treesD
     return { ...tree, nodes: await readHierarchy(dir) };
   });
 
-  app.patch('/trees/:tree', { schema: { params: treeParams, body: treePatch } }, async (request) =>
-    updateTree(treesDir, request.params.tree, request.body),
+  app.patch(
+    '/trees/:tree',
+    { schema: { params: treeParams, body: treePatch } },
+    async (request) => {
+      const { tree } = request.params;
+      // Instructions-only edits never rename, so they stay allowed while answers stream.
+      if (request.body.title === undefined) return updateTree(treesDir, tree, request.body);
+      // A title change renames the folder: exclusive on the old id, and on the new id
+      // right before the rename.
+      return locks.withExclusive(tree, () =>
+        updateTree(treesDir, tree, request.body, {
+          lockTarget: (id) => locks.acquireExclusive(id),
+        }),
+      );
+    },
   );
 
   app.get(

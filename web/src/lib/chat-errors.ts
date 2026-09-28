@@ -26,7 +26,10 @@ export function describeError(error: unknown): DescribedError {
         kind: 'busy-streaming',
         message: i18n.t('errors.busyStreaming'),
       };
-    if (error.status === 404 && error.message.startsWith('Node not found:'))
+    if (
+      error.status === 404 &&
+      (error.code === 'node_not_found' || error.message.startsWith('Node not found:'))
+    )
       return { kind: 'node-missing', message: error.message };
   }
   return { kind: 'other', message: plainMessage(error) };

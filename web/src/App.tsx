@@ -22,9 +22,11 @@ import {
   SIDE_MIN_WIDTH,
   usePaneLayout,
 } from './lib/layout';
+import { afterMove } from './lib/tree';
 import {
   advanceSide,
   closeSide,
+  followTreeRename,
   openSide,
   promoteSide,
   readUrlState,
@@ -100,13 +102,36 @@ export function App() {
   }, [navigate]);
   const onNodesChanged = useCallback(
     (change: NodesChange) => {
-      const side = readUrlState(window.location.search).side;
+      const { tree: treeId, side } = readUrlState(window.location.search);
+      const map =
+        change.kind === 'move' ? change.moved : change.kind === 'rename' ? change.renamed : null;
+      // An open attachment viewer follows its node to the new id.
+      if (map)
+        setViewer((current) => {
+          if (current?.kind !== 'attachment' || current.view.treeId !== treeId) return current;
+          const nodeId = afterMove(current.view.nodeId, map);
+          return nodeId === current.view.nodeId
+            ? current
+            : { kind: 'attachment', view: { ...current.view, nodeId } };
+        });
       if (!side) return;
       const next =
-        change.kind === 'move'
-          ? remapSideAfterMove(side, change.moved)
-          : remapSideAfterDelete(side, change.ids);
+        change.kind === 'delete'
+          ? remapSideAfterDelete(side, change.ids)
+          : remapSideAfterMove(side, map ?? {});
       if (next !== side) navigate({ side: next }, true);
+    },
+    [navigate],
+  );
+  // Tree folder renamed: same node and side chat under the new tree id.
+  const onTreeRenamed = useCallback(
+    (from: string, to: string) => {
+      navigate(followTreeRename(readUrlState(window.location.search), from, to), true);
+      setViewer((current) =>
+        current?.kind === 'attachment' && current.view.treeId === from
+          ? { kind: 'attachment', view: { ...current.view, treeId: to } }
+          : current,
+      );
     },
     [navigate],
   );
@@ -139,6 +164,7 @@ export function App() {
             tree={tree.data ?? null}
             currentTreeId={url.tree}
             onSelectTree={selectTree}
+            onTreeRenamed={onTreeRenamed}
           />
 
           <main className="graph-pane">

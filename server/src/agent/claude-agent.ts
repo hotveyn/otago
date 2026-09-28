@@ -1,6 +1,7 @@
 import { type Options, query } from '@anthropic-ai/claude-agent-sdk';
 import { createAttachmentMcpServer, SAVE_ATTACHMENT_TOOL_ID } from './attachment-tool.js';
 import { buildSystemPrompt, buildUserPrompt, NAMING_PROMPT, sanitizeNodeName } from './prompt.js';
+import { TRASH_DENY_RULE, trashGuardMatcher } from './trash-guard.js';
 import type { Agent, AgentEvent, AskInput, NameInput } from './types.js';
 
 export const ALLOWED_TOOLS = ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch'];
@@ -29,6 +30,9 @@ export function buildAskOptions(
     tools: ALLOWED_TOOLS,
     allowedTools: [...ALLOWED_TOOLS, SAVE_ATTACHMENT_TOOL_ID],
     disallowedTools: DENIED_TOOLS,
+    // Soft-deleted nodes (`*.deleted-*` folders) stay hidden from the agent.
+    settings: { permissions: { deny: [TRASH_DENY_RULE] } },
+    hooks: { PreToolUse: [trashGuardMatcher()] },
     includePartialMessages: true,
     abortController,
   };

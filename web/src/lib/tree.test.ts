@@ -56,6 +56,14 @@ describe('tree helpers', () => {
     expect(afterDelete('', ['a'])).toBe('');
   });
 
+  it('follows the current node after a rename (full map)', () => {
+    const renamed = { a: 'b', 'a/x': 'b/x' };
+    expect(afterMove('a', renamed)).toBe('b');
+    expect(afterMove('a/x/y', renamed)).toBe('b/x/y');
+    expect(afterMove('e', renamed)).toBe('e');
+    expect(afterMove('a-2', renamed)).toBe('a-2');
+  });
+
   it('follows the current node after move', () => {
     expect(afterMove('a/b/c', { 'a/b': 'e/b-2' })).toBe('e/b-2/c');
     expect(afterMove('a/b', { 'a/b': 'b' })).toBe('b');

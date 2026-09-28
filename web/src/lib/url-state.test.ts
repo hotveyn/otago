@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   advanceSide,
   closeSide,
+  followTreeRename,
   mergeUrlState,
   openSide,
   promoteSide,
@@ -176,5 +177,56 @@ describe('side remapping', () => {
     expect(remapSideAfterDelete(side, ['q'])).toBe(side);
     const unsent = { anchor: 'a', head: null };
     expect(remapSideAfterDelete(unsent, ['a/x'])).toBe(unsent);
+  });
+});
+
+describe('tree rename', () => {
+  const state: UrlState = { tree: 'rust-basics', node: 'a/b', side: { anchor: 'a', head: 'a/b' } };
+
+  it('keeps node and side and switches the tree', () => {
+    expect(followTreeRename(state, 'rust-basics', 'rust')).toEqual({
+      tree: 'rust',
+      node: 'a/b',
+      side: { anchor: 'a', head: 'a/b' },
+    });
+  });
+
+  it('does nothing when another tree is shown', () => {
+    expect(followTreeRename(state, 'go', 'golang')).toEqual({});
+  });
+
+  it('round-trips through mergeUrlState and writeUrlState', () => {
+    const merged = mergeUrlState(state, followTreeRename(state, 'rust-basics', 'rust'));
+    expect(writeUrlState(merged)).toBe('?tree=rust&node=a/b&side=a&sideNode=a/b');
+  });
+});
+
+describe('side remapping after a node rename', () => {
+  const renamed = { a: 'b', 'a/x': 'b/x', 'a/x/y': 'b/x/y' };
+
+  it('follows an anchor inside the renamed subtree', () => {
+    expect(remapSideAfterMove({ anchor: 'a/x', head: 'a/x/y' }, renamed)).toEqual({
+      anchor: 'b/x',
+      head: 'b/x/y',
+    });
+  });
+
+  it('follows a head inside the renamed subtree', () => {
+    expect(remapSideAfterMove({ anchor: 'q', head: 'q/a' }, { 'q/a': 'q/z' })).toEqual({
+      anchor: 'q',
+      head: 'q/z',
+    });
+  });
+
+  it('follows an anchor that is the renamed node', () => {
+    expect(remapSideAfterMove({ anchor: 'a', head: null }, renamed)).toEqual({
+      anchor: 'b',
+      head: null,
+    });
+  });
+
+  it('returns the same object for an identity map', () => {
+    const side = { anchor: 'a', head: 'a/x' };
+    expect(remapSideAfterMove(side, { a: 'a', 'a/x': 'a/x' })).toBe(side);
   });
 });

@@ -25,7 +25,8 @@ and keep everything as plain Markdown files you can commit to git.
 - **Answers from your sources.** Upload `.md`, `.txt`, `.pdf` or e-books (`.epub`, `.fb2`, `.mobi`, `.azw3`, …). Claude searches them first and cites file and line numbers. It uses web search only when your sources don't cover the question.
 - **Tree instructions.** Give each tree its own rules, e.g. *"Answer in Russian. Compare with C++."*
 - **Attachments.** Claude can save files (images, SVG, tables, PDFs) to a node. You can preview them in the chat.
-- **Node management.** Select one or many nodes, then delete them or move them together with their subtrees.
+- **Node management.** Select one or many nodes, then delete them or move them together with their subtrees. Deletion is soft: the folder is renamed in place to `<name>.deleted-<timestamp>` and can be restored. Trash folders are hidden from the tree and the agent (permission deny rule, a tool hook and a prompt rule); they accumulate and can be removed by hand. Residual risk: an unscoped agent Grep over the whole tree may still print matches from trash folders if the SDK does not apply the deny rule to Grep output.
+- **Undo.** Press Ctrl+Z (Cmd+Z on macOS) in the graph to undo the last move or delete. History is per tree, kept in the browser tab (sessionStorage, last 50 actions). No redo. Text fields keep their normal undo.
 - **Model picker.** Choose the answer model per request (Opus, Sonnet, Fable, Haiku).
 - **Themes.** Standard, Dark and Cool light.
 - **Plain files only.** No database. The `trees/` folder is the whole state, so git is your backup.

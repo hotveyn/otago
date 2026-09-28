@@ -28,14 +28,28 @@ function pickName(base: string, ...taken: ReadonlySet<string>[]): string {
   }
 }
 
+export interface UniqueNameOptions {
+  /**
+   * Current name of the entry being renamed: it counts as free in `dir` (but is still skipped
+   * when reserved or claimed by another caller).
+   */
+  self?: string;
+}
+
+async function takenNames(dir: string, self?: string): Promise<Set<string>> {
+  const taken = new Set(await readdir(dir).catch(() => [] as string[]));
+  if (self !== undefined) taken.delete(self);
+  return taken;
+}
+
 /** First free name among `base`, `base-2`, `base-3`, … in `dir`. */
 export async function uniqueName(
   dir: string,
   base: string,
   reserved: ReadonlySet<string> = new Set(),
+  options: UniqueNameOptions = {},
 ): Promise<string> {
-  const taken = new Set(await readdir(dir).catch(() => [] as string[]));
-  return pickName(base, taken, reserved);
+  return pickName(base, await takenNames(dir, options.self), reserved);
 }
 
 /** Names handed out by `claimUniqueName` and not yet released, keyed by resolved dir. */
@@ -56,9 +70,10 @@ export async function claimUniqueName(
   dir: string,
   base: string,
   reserved: ReadonlySet<string> = new Set(),
+  options: UniqueNameOptions = {},
 ): Promise<NameClaim> {
   const key = path.resolve(dir);
-  const taken = new Set(await readdir(dir).catch(() => [] as string[]));
+  const taken = await takenNames(dir, options.self);
   let claimed = claims.get(key);
   if (!claimed) {
     claimed = new Set();

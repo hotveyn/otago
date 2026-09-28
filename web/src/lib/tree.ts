@@ -66,7 +66,10 @@ export function afterDelete(currentId: string, ids: Iterable<string>): string {
   return hit === undefined ? currentId : parentIdOf(hit);
 }
 
-/** New id of `currentId` after a move that returned `moved` (old top-level id → new id). */
+/**
+ * New id of `currentId` after a move (`moved`: old top-level id → new id) or a rename
+ * (`renamed`, full map: the renamed node first, then descendants; identity entries are no-ops).
+ */
 export function afterMove(currentId: string, moved: Record<string, string>): string {
   for (const [from, to] of Object.entries(moved)) {
     if (isSameOrDescendant(currentId, from)) return to + currentId.slice(from.length);

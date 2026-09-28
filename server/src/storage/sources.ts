@@ -98,6 +98,22 @@ export async function readSource(treeDir: string, name: string): Promise<Buffer>
 }
 
 /**
+ * Create `<tree>/sources/` if missing. Never recreates the tree folder itself: an upload racing
+ * a tree rename (source routes take no lock) must not leave an orphan folder at the old id.
+ */
+async function ensureSourcesDir(treeDir: string): Promise<void> {
+  try {
+    await mkdir(path.join(treeDir, SOURCES_DIR));
+  } catch (error) {
+    if (isErrno(error, 'EEXIST')) return;
+    if (isErrno(error, 'ENOENT')) {
+      throw new NotFoundError(`Tree not found: ${path.basename(treeDir)}`, 'tree_not_found');
+    }
+    throw error;
+  }
+}
+
+/**
  * Save (or replace) a source file.
  * An e-book is saved with its text extracted to `<name>.md`, so the agent can search and cite it.
  */
@@ -109,7 +125,7 @@ export async function saveSource(
   const target = sourcePath(treeDir, name);
   const text = ebookExtensionOf(name) ? ebookTextName(name) : undefined;
   const markdown = text ? extractEbookText(name, content, `${SOURCES_DIR}/${name}`) : undefined;
-  await mkdir(path.dirname(target), { recursive: true });
+  await ensureSourcesDir(treeDir);
   if (text && markdown !== undefined) {
     await writeFileAtomic(sourcePath(treeDir, text), markdown);
   }

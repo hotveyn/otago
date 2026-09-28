@@ -5,7 +5,7 @@ const CONFLICT_MESSAGES: Record<ConflictCode, string> = {
   tree_busy_streaming:
     'Tree "<tree>" is busy: an answer is still streaming. Try again when it finishes.',
   tree_busy_structural:
-    'Tree "<tree>" is busy: nodes are being moved or deleted. Try again in a moment.',
+    'Tree "<tree>" is busy: nodes are being moved, renamed or deleted. Try again in a moment.',
 };
 
 export interface TreeLockStatus {
@@ -21,7 +21,7 @@ function conflict(treeId: string, code: ConflictCode): ConflictError {
  * Per-tree readers–writer lock, in memory, per process.
  *
  * - Shared: message streams. Any number may run at once in one tree.
- * - Exclusive: structural ops (move/delete). Only when nothing else is held.
+ * - Exclusive: structural ops (move/delete/restore/rename). Only when nothing else is held.
  *
  * Conflicts are rejected with 409 (never queued). Acquisition is synchronous, so the check
  * and the update happen in one tick. The policy lives in `acquire*`, which is the seam for a

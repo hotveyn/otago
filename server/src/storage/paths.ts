@@ -98,3 +98,64 @@ export function isSameOrDescendant(id: string, ancestorId: string): boolean {
   if (ancestorId === '') return true;
   return id === ancestorId || id.startsWith(`${ancestorId}/`);
 }
+
+/** Marker between the original name and the timestamp of a soft-deleted node folder. */
+export const DELETED_MARKER = '.deleted-';
+
+/**
+ * Soft-deleted folder name (one segment): `<name>.deleted-<epochMs>[-<n>]`.
+ * The `.` makes it a non-slug, so it never collides with a live node name.
+ */
+export const DELETED_NAME_RE =
+  /^(?<name>[a-z0-9]+(?:-[a-z0-9]+)*)\.deleted-(?<ts>\d{13,})(?:-(?<n>[2-9]|[1-9]\d+))?$/;
+
+/** Glob that matches any path inside a soft-deleted folder (agent deny rules). */
+export const DELETED_PATH_GLOB = '**/*.deleted-*/**';
+
+export function isDeletedName(name: string): boolean {
+  return DELETED_NAME_RE.test(name);
+}
+
+/** Trash folder name for `name`; `counter >= 2` adds the disambiguation suffix. */
+export function deletedNameFor(name: string, now = Date.now(), counter = 1): string {
+  const base = `${name}${DELETED_MARKER}${now}`;
+  return counter >= 2 ? `${base}-${counter}` : base;
+}
+
+/** Parsed trash id: `<live parent node id>/<deleted folder name>`. */
+export interface ParsedTrashId {
+  /** Live parent node id (`""` = tree root). */
+  parentId: string;
+  /** Deleted folder name, e.g. `borrowing-rules.deleted-1759000000000`. */
+  folder: string;
+  /** Original slug, the desired name on restore. */
+  originalName: string;
+  /** Deletion time, epoch ms. */
+  deletedAt: number;
+}
+
+export function parseTrashId(trashId: string): ParsedTrashId {
+  if (trashId === '' || path.isAbsolute(trashId) || trashId.includes('\\')) {
+    throw new InvalidInputError(`Invalid trash id: ${trashId}`);
+  }
+  const index = trashId.lastIndexOf('/');
+  const parentId = index === -1 ? '' : trashId.slice(0, index);
+  const folder = trashId.slice(index + 1);
+  const match = DELETED_NAME_RE.exec(folder);
+  if (!match?.groups) throw new InvalidInputError(`Invalid trash id: ${trashId}`);
+  try {
+    nodeIdSegments(parentId);
+  } catch {
+    throw new InvalidInputError(`Invalid trash id: ${trashId}`);
+  }
+  const originalName = match.groups.name ?? '';
+  if (reservedNamesFor(parentId).has(originalName)) {
+    throw new InvalidInputError(`Invalid trash id: ${trashId}`);
+  }
+  return { parentId, folder, originalName, deletedAt: Number(match.groups.ts) };
+}
+
+export function trashDirOf(treeDir: string, trashId: string): string {
+  const { parentId, folder } = parseTrashId(trashId);
+  return resolveInside(treeDir, ...nodeIdSegments(parentId), folder);
+}

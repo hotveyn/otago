@@ -8,7 +8,8 @@ export const graph = {
   inside: '(внутри: {{count}})',
   moveTo: 'Переместить…',
   clear: 'Сбросить',
-  hint: 'Клик — открыть · Shift/⌘-клик — выбрать · перетащите на узел, чтобы переместить',
+  rename: 'Переименовать',
+  hint: 'Клик — открыть · Shift/⌘-клик — выбрать · перетащите на узел, чтобы переместить · Ctrl/⌘+Z — отменить',
   busy: 'Идёт ответ… изменения приостановлены',
   delete: {
     title_one: 'Удалить {{count}} узел',
@@ -17,22 +18,18 @@ export const graph = {
     title_other: 'Удалить {{count}} узла',
     confirm: 'Удалить {{count}}',
     deleting: 'Удаление…',
-    body_one:
-      'Будет безвозвратно удалён <strong>{{count}}</strong> узел. Резервная копия — только Git.',
-    body_few:
-      'Будут безвозвратно удалены <strong>{{count}}</strong> узла. Резервная копия — только Git.',
-    body_many:
-      'Будут безвозвратно удалены <strong>{{count}}</strong> узлов. Резервная копия — только Git.',
-    body_other:
-      'Будут безвозвратно удалены <strong>{{count}}</strong> узла. Резервная копия — только Git.',
+    body_one: 'Будет удалён <strong>{{count}}</strong> узел. Его можно вернуть через Ctrl/⌘+Z.',
+    body_few: 'Будут удалены <strong>{{count}}</strong> узла. Их можно вернуть через Ctrl/⌘+Z.',
+    body_many: 'Будут удалены <strong>{{count}}</strong> узлов. Их можно вернуть через Ctrl/⌘+Z.',
+    body_other: 'Будут удалены <strong>{{count}}</strong> узла. Их можно вернуть через Ctrl/⌘+Z.',
     bodyNested_one:
-      'Будет безвозвратно удалён <strong>{{count}}</strong> узел (выбрано {{selected}} + {{descendants}}). Резервная копия — только Git.',
+      'Будет удалён <strong>{{count}}</strong> узел (выбрано {{selected}} + {{descendants}}). Его можно вернуть через Ctrl/⌘+Z.',
     bodyNested_few:
-      'Будут безвозвратно удалены <strong>{{count}}</strong> узла (выбрано {{selected}} + {{descendants}}). Резервная копия — только Git.',
+      'Будут удалены <strong>{{count}}</strong> узла (выбрано {{selected}} + {{descendants}}). Их можно вернуть через Ctrl/⌘+Z.',
     bodyNested_many:
-      'Будут безвозвратно удалены <strong>{{count}}</strong> узлов (выбрано {{selected}} + {{descendants}}). Резервная копия — только Git.',
+      'Будут удалены <strong>{{count}}</strong> узлов (выбрано {{selected}} + {{descendants}}). Их можно вернуть через Ctrl/⌘+Z.',
     bodyNested_other:
-      'Будут безвозвратно удалены <strong>{{count}}</strong> узла (выбрано {{selected}} + {{descendants}}). Резервная копия — только Git.',
+      'Будут удалены <strong>{{count}}</strong> узла (выбрано {{selected}} + {{descendants}}). Их можно вернуть через Ctrl/⌘+Z.',
     descendants_one: '{{count}} потомок',
     descendants_few: '{{count}} потомка',
     descendants_many: '{{count}} потомков',
@@ -46,5 +43,21 @@ export const graph = {
     confirm: 'Переместить сюда',
     moving: 'Перемещение…',
     hint: 'Выберите нового родителя. Потомки переместятся вместе с узлами.',
+  },
+  renameDialog: {
+    title: 'Переименовать узел',
+    label: 'Название',
+    confirm: 'Переименовать',
+    saving: 'Переименование…',
+    hint: 'Название станет именем папки (строчные латинские буквы, дефисы). Если такое имя уже есть у соседнего узла, добавится «-2». Идентификаторы узла и его потомков изменятся.',
+  },
+  undo: {
+    stale: 'Не удалось отменить: дерево с тех пор изменилось.',
+    nodeMissing: 'Не удалось отменить: узел больше не существует.',
+    parentMissing: 'Не удалось отменить: исходного родителя больше нет.',
+    trashMissing: 'Не удалось отменить: удалённого узла больше нет в корзине.',
+    treeMissing: 'Не удалось отменить: дерева больше нет.',
+    invalid: 'Это изменение нельзя отменить.',
+    failed: 'Не удалось отменить: {{message}}',
   },
 } satisfies Messages<typeof en>;

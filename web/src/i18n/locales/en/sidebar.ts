@@ -14,6 +14,7 @@ export const sidebar = {
     title: 'Settings',
     instructionsSet: 'instructions set',
     fieldTitle: 'Title',
+    titleHint: 'Renaming the tree also renames its folder.',
     fieldInstructions: 'Instructions',
     instructionsPlaceholder: 'Answer in Russian. I know C++, compare with it where useful.',
     instructionsHint: 'Added to the system prompt on every question.',

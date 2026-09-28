@@ -37,6 +37,7 @@ Config lives in `server/.env` (`OTAGO_TREES_DIR`, `OTAGO_PORT`, `OTAGO_MODEL`, `
 - A node = any folder containing `node.md`. **Node id = path relative to the tree folder** (e.g. `ownership/borrowing-rules`); folder name is the kebab-case display name, unique among siblings (`-2` suffix on collision). Sibling order = `created` frontmatter.
 - `node.md` holds one exchange, split by `<!-- otago:user -->` / `<!-- otago:assistant -->` markers (parse/serialize in `server/src/storage/format.ts`).
 - Per-node subfolders: `attachments/` (files the agent saved) and `files/` (user uploads). Reserved names are in `server/src/storage/paths.ts`.
+- Delete is soft: `parent/<name>` → `parent/<name>.deleted-<epochMs>` (non-slug, so invisible to hierarchy/ids and hidden from the agent). Trash id = path of that folder; `POST /trees/:tree/nodes/restore` renames it back (`-2` if the name was taken).
 - E-books/PDFs are converted to `<name>.<ext>.md` on upload (`server/src/storage/ebooks/`) so the agent can Grep them.
 
 ### Server (`server/src`)
@@ -51,6 +52,7 @@ Config lives in `server/.env` (`OTAGO_TREES_DIR`, `OTAGO_PORT`, `OTAGO_MODEL`, `
 - React 19 + Vite, TanStack Query for server state (`api/queries.ts`, `api/client.ts`), SSE parsing in `api/sse.ts`, React Flow + dagre for the graph (`components/graph/`).
 - Navigation state lives in the URL (`lib/url-state.ts`: `?tree=&node=&side=&sideNode=`), synced via `useSyncExternalStore`; tree edits update it through `afterMove`/`afterDelete` in `lib/tree.ts`.
 - Pure logic is kept in `lib/*.ts` with colocated `*.test.ts`; components stay thin.
+- Tree undo (Ctrl+Z): history lives in `lib/undo-history.ts` (per-tree sessionStorage stack, cap 50), driven by `components/graph/useTreeUndo.ts`; shortcut/focus rules in `lib/keyboard.ts`. `HistoryEntry` is an open discriminated union (`move`, `delete`); add new undoable actions as new members. Every entry holds its own inverse data. After any id-changing response, remap the whole stack by prefix (`old` / `old/…` → `new…`). Undo errors: 409 keeps the entry, 400/404 drop it.
 
 ## Feature workflow
 

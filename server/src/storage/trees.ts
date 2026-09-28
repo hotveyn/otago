@@ -1,8 +1,8 @@
-import { mkdir, readdir, readFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename } from 'node:fs/promises';
 import path from 'node:path';
 import { InvalidInputError, NotFoundError } from '../errors.js';
 import { parseTreeFile, serializeTreeFile, type TreeFile } from './format.js';
-import { createDirAtomic, exists, isErrno, uniqueName, writeFileAtomic } from './fs-utils.js';
+import { claimUniqueName, createDirAtomic, exists, isErrno, writeFileAtomic } from './fs-utils.js';
 import { isSlug, TREE_FILE, toKebabCase, treeDirOf } from './paths.js';
 
 export interface TreeMeta extends TreeFile {
@@ -34,21 +34,45 @@ export async function createTree(
   const title = input.title.trim();
   if (!title) throw new InvalidInputError('Title is required');
   await mkdir(treesDir, { recursive: true });
-  const id = await uniqueName(treesDir, toKebabCase(title, 'tree'));
   const tree: TreeFile = {
     title,
     created: now.toISOString(),
     instructions: (input.instructions ?? '').trim(),
   };
-  await createDirAtomic(treesDir, id, { [TREE_FILE]: serializeTreeFile(tree) });
+  // Claimed in-process, so a concurrent create or rename never picks the same id.
+  const { name: id, release } = await claimUniqueName(treesDir, toKebabCase(title, 'tree'));
+  try {
+    await createDirAtomic(treesDir, id, { [TREE_FILE]: serializeTreeFile(tree) });
+  } finally {
+    release();
+  }
   return { id, ...tree };
 }
 
+export interface UpdateTreeResult extends TreeMeta {
+  /** State before the update (equals the new values when nothing changed). */
+  previous: { id: string; title: string };
+}
+
+export interface UpdateTreeOptions {
+  /**
+   * Called with the new tree id right before the folder is renamed (only when the id
+   * changes). May throw (e.g. 409) to abort; the returned release runs after the update.
+   */
+  lockTarget?: (newId: string) => () => void;
+}
+
+/**
+ * Update title and/or instructions. A title change also renames the tree folder to match
+ * (`toKebabCase(title, 'tree')`, unique among trees, own name counts as free). If writing
+ * `tree.md` fails after the folder rename, the folder is renamed back.
+ */
 export async function updateTree(
   treesDir: string,
   treeId: string,
   patch: { title?: string; instructions?: string },
-): Promise<TreeMeta> {
+  options: UpdateTreeOptions = {},
+): Promise<UpdateTreeResult> {
   const dir = await existingTreeDir(treesDir, treeId);
   const current = await readTreeFile(dir);
   const next: TreeFile = { ...current };
@@ -57,8 +81,46 @@ export async function updateTree(
     if (!next.title) throw new InvalidInputError('Title is required');
   }
   if (patch.instructions !== undefined) next.instructions = patch.instructions.trim();
-  await writeFileAtomic(path.join(dir, TREE_FILE), serializeTreeFile(next));
-  return { id: treeId, ...next };
+  const previous = { id: treeId, title: current.title };
+  const content = serializeTreeFile(next);
+  if (patch.title === undefined) {
+    await writeFileAtomic(path.join(dir, TREE_FILE), content);
+    return { id: treeId, ...next, previous };
+  }
+  const base = toKebabCase(next.title, 'tree');
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const { name: newId, release } = await claimUniqueName(treesDir, base, undefined, {
+      self: treeId,
+    });
+    try {
+      if (newId === treeId) {
+        await writeFileAtomic(path.join(dir, TREE_FILE), content);
+        return { id: treeId, ...next, previous };
+      }
+      const releaseTarget = options.lockTarget?.(newId);
+      try {
+        const newDir = path.join(treesDir, newId);
+        try {
+          await rename(dir, newDir);
+        } catch (error) {
+          if (isErrno(error, 'EEXIST', 'ENOTEMPTY')) continue;
+          throw error;
+        }
+        try {
+          await writeFileAtomic(path.join(newDir, TREE_FILE), content);
+        } catch (error) {
+          await rename(newDir, dir).catch(() => undefined);
+          throw error;
+        }
+        return { id: newId, ...next, previous };
+      } finally {
+        releaseTarget?.();
+      }
+    } finally {
+      release();
+    }
+  }
+  throw new Error(`Could not rename tree "${treeId}"`);
 }
 
 /** Resolve a tree folder, throwing 404 when it has no `tree.md`. */
@@ -67,10 +129,10 @@ export async function existingTreeDir(treesDir: string, treeId: string): Promise
   try {
     dir = treeDirOf(treesDir, treeId);
   } catch {
-    throw new NotFoundError(`Tree not found: ${treeId}`);
+    throw new NotFoundError(`Tree not found: ${treeId}`, 'tree_not_found');
   }
   if (!(await exists(path.join(dir, TREE_FILE)))) {
-    throw new NotFoundError(`Tree not found: ${treeId}`);
+    throw new NotFoundError(`Tree not found: ${treeId}`, 'tree_not_found');
   }
   return dir;
 }
@@ -79,7 +141,8 @@ async function readTreeFile(dir: string): Promise<TreeFile> {
   try {
     return parseTreeFile(await readFile(path.join(dir, TREE_FILE), 'utf8'));
   } catch (error) {
-    if (isErrno(error, 'ENOENT')) throw new NotFoundError(`Tree not found: ${path.basename(dir)}`);
+    if (isErrno(error, 'ENOENT'))
+      throw new NotFoundError(`Tree not found: ${path.basename(dir)}`, 'tree_not_found');
     throw error;
   }
 }

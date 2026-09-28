@@ -104,12 +104,13 @@ describe('trees API', () => {
       payload: { title: 'Rust 2' },
     });
     expect(renamed.json()).toMatchObject({
-      id: 'rust',
+      id: 'rust-2',
       title: 'Rust 2',
       instructions: 'new instructions',
+      previous: { id: 'rust', title: 'Rust' },
     });
 
-    const bad = await ctx.app.inject({ method: 'PATCH', url: '/api/trees/rust', payload: {} });
+    const bad = await ctx.app.inject({ method: 'PATCH', url: '/api/trees/rust-2', payload: {} });
     expect(bad.statusCode).toBe(400);
   });
 
@@ -149,5 +150,110 @@ describe('trees API', () => {
       url: '/api/trees/rust/chain?node=../x',
     });
     expect(traversal.statusCode).toBe(400);
+  });
+});
+
+describe('tree rename (PATCH title)', () => {
+  let ctx: Awaited<ReturnType<typeof makeApp>>;
+  beforeEach(async () => {
+    ctx = await makeApp();
+    await ctx.app.inject({ method: 'POST', url: '/api/trees', payload: { title: 'Rust' } });
+    const n = { created: '2026-09-23T10:00:00Z', model: 'm', user: 'Q', assistant: 'A' };
+    await createNode(path.join(ctx.treesDir, 'rust'), '', 'ownership', n);
+  });
+  afterEach(() => ctx.close());
+
+  const patch = (tree: string, payload: object) =>
+    ctx.app.inject({ method: 'PATCH', url: `/api/trees/${tree}`, payload });
+  const get = (tree: string) => ctx.app.inject({ method: 'GET', url: `/api/trees/${tree}` });
+  const listIds = async () =>
+    (await ctx.app.inject({ method: 'GET', url: '/api/trees' }))
+      .json()
+      .trees.map((t: { id: string }) => t.id);
+
+  it('renames the folder; the old id stops working', async () => {
+    const before = (await get('rust')).json().nodes;
+    const res = await patch('rust', { title: 'Rust Basics' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      id: 'rust-basics',
+      title: 'Rust Basics',
+      previous: { id: 'rust', title: 'Rust' },
+    });
+    const old = await get('rust');
+    expect(old.statusCode).toBe(404);
+    expect(old.json().code).toBe('tree_not_found');
+    const renamed = await get('rust-basics');
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json().nodes).toEqual(before);
+    expect(await listIds()).toEqual(['rust-basics']);
+    expect(ctx.locks.isLocked('rust')).toBe(false);
+    expect(ctx.locks.isLocked('rust-basics')).toBe(false);
+  });
+
+  it('instructions-only patch keeps the id', async () => {
+    const res = await patch('rust', { instructions: 'x' });
+    expect(res.json()).toMatchObject({ id: 'rust', previous: { id: 'rust', title: 'Rust' } });
+  });
+
+  it('same slug keeps the id and updates the title', async () => {
+    const res = await patch('rust', { title: 'RUST' });
+    expect(res.json()).toMatchObject({ id: 'rust', title: 'RUST', previous: { id: 'rust' } });
+    expect((await get('rust')).json().title).toBe('RUST');
+  });
+
+  it('collision with another tree gets -2', async () => {
+    await ctx.app.inject({ method: 'POST', url: '/api/trees', payload: { title: 'Go' } });
+    const res = await patch('rust', { title: 'Go' });
+    expect(res.json().id).toBe('go-2');
+    expect((await listIds()).sort()).toEqual(['go', 'go-2']);
+  });
+
+  it('title change while a stream holds the tree → 409; instructions still allowed', async () => {
+    const release = ctx.locks.acquireShared('rust');
+    const res = await patch('rust', { title: 'Other' });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toEqual({
+      error: 'Tree "rust" is busy: an answer is still streaming. Try again when it finishes.',
+      code: 'tree_busy_streaming',
+    });
+    expect((await patch('rust', { instructions: 'ok' })).statusCode).toBe(200);
+    release();
+    expect(ctx.locks.isLocked('rust')).toBe(false);
+  });
+
+  it('409 tree_busy_structural while another structural op runs', async () => {
+    const release = ctx.locks.acquireExclusive('rust');
+    const res = await patch('rust', { title: 'Other' });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toEqual({
+      error:
+        'Tree "rust" is busy: nodes are being moved, renamed or deleted. Try again in a moment.',
+      code: 'tree_busy_structural',
+    });
+    release();
+  });
+
+  it('a lock held on the new id → 409, nothing renamed, locks released', async () => {
+    const release = ctx.locks.acquireShared('other');
+    const res = await patch('rust', { title: 'Other' });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('tree_busy_streaming');
+    expect((await get('rust')).json().title).toBe('Rust');
+    expect(await listIds()).toEqual(['rust']);
+    expect(ctx.locks.isLocked('rust')).toBe(false);
+    release();
+    expect(ctx.locks.isLocked('other')).toBe(false);
+  });
+
+  it('undo round-trip restores the original id', async () => {
+    const { id, previous } = (await patch('rust', { title: 'Rust Basics' })).json();
+    const back = await patch(id, { title: previous.title });
+    expect(back.json()).toMatchObject({
+      id: 'rust',
+      title: 'Rust',
+      previous: { id: 'rust-basics', title: 'Rust Basics' },
+    });
+    expect(await listIds()).toEqual(['rust']);
   });
 });

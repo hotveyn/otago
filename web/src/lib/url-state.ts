@@ -84,7 +84,10 @@ export function closeSide(): Partial<UrlState> {
   return { side: null };
 }
 
-/** New side ids after a move; the same object when nothing changed. */
+/**
+ * New side ids after a move (`moved`) or a node rename (`renamed`, full map); the same object
+ * when nothing changed.
+ */
 export function remapSideAfterMove(
   side: SideChatState,
   moved: Record<string, string>,
@@ -93,6 +96,19 @@ export function remapSideAfterMove(
   let head = side.head === null ? null : afterMove(side.head, moved);
   if (head !== null && !isValidHead(head, anchor)) head = null;
   return anchor === side.anchor && head === side.head ? side : { anchor, head };
+}
+
+/**
+ * URL after the tree `oldTreeId` was renamed to `newTreeId`: same node and side chat (node ids
+ * are tree-relative). `{}` when another tree is shown by now.
+ */
+export function followTreeRename(
+  state: UrlState,
+  oldTreeId: string,
+  newTreeId: string,
+): Partial<UrlState> {
+  if (state.tree !== oldTreeId) return {};
+  return { tree: newTreeId, node: state.node, side: state.side };
 }
 
 /**

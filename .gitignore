@@ -9,3 +9,4 @@ trees
 !.env.example
 
 .claude/worktrees
+.claude/features/

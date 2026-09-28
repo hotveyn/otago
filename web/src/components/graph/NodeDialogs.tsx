@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { type FormEvent, useEffect, useId, useRef, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import type { HierarchyNode } from '../../api/types';
 import { describeError } from '../../lib/chat-errors';
+import { canSubmitRename, MAX_NAME_LENGTH } from '../../lib/rename';
 import { canMoveTo, countWithDescendants, flatten, parentIdOf, topLevelIds } from '../../lib/tree';
 import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
@@ -154,6 +155,84 @@ export function MoveDialog({
           );
         })}
       </ul>
+      <ErrorNote error={error} message={describeError(error).message} />
+    </Dialog>
+  );
+}
+
+interface RenameDialogProps {
+  open: boolean;
+  /** Current folder name of the node; the input starts with it. */
+  currentName: string;
+  pending: boolean;
+  error: unknown;
+  onConfirm: (name: string) => void;
+  onClose: () => void;
+}
+
+export function RenameDialog({
+  open,
+  currentName,
+  pending,
+  error,
+  onConfirm,
+  onClose,
+}: RenameDialogProps) {
+  const { t } = useTranslation(['graph', 'common']);
+  const formId = useId();
+  const input = useRef<HTMLInputElement>(null);
+  /** `null` until the user types: shows the current name. */
+  const [value, setValue] = useState<string | null>(null);
+  const shown = value ?? currentName;
+  const valid = canSubmitRename(currentName, shown);
+
+  useEffect(() => {
+    if (!open) {
+      setValue(null);
+      return;
+    }
+    // After `showModal()` moved focus into the dialog.
+    const frame = requestAnimationFrame(() => {
+      input.current?.focus();
+      input.current?.select();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [open]);
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (valid && !pending) onConfirm(shown);
+  };
+
+  return (
+    <Dialog
+      open={open}
+      title={t('renameDialog.title')}
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            {t('common:cancel')}
+          </Button>
+          <Button type="submit" form={formId} variant="primary" disabled={!valid || pending}>
+            {pending ? t('renameDialog.saving') : t('renameDialog.confirm')}
+          </Button>
+        </>
+      }
+    >
+      <form id={formId} className="stack" onSubmit={submit}>
+        <label className="field">
+          <span className="field-label">{t('renameDialog.label')}</span>
+          <input
+            ref={input}
+            className="input"
+            value={shown}
+            maxLength={MAX_NAME_LENGTH}
+            onChange={(event) => setValue(event.target.value)}
+          />
+          <span className="field-hint">{t('renameDialog.hint')}</span>
+        </label>
+      </form>
       <ErrorNote error={error} message={describeError(error).message} />
     </Dialog>
   );

@@ -161,6 +161,125 @@ describe('error codes', () => {
   });
 });
 
+describe('node management', () => {
+  const ok = (body: unknown) => mockFetch(new Response(JSON.stringify(body), { status: 200 }));
+  const sentBody = (fetchMock: ReturnType<typeof mockFetch>) => {
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    return JSON.parse(init.body as string) as Record<string, unknown>;
+  };
+
+  it('restoreNodes posts trash ids and returns the body', async () => {
+    const body = { restored: { 'a.deleted-1': 'a' }, nodes: [] };
+    const fetchMock = ok(body);
+    expect(await api.restoreNodes('my tree', ['a.deleted-1'])).toEqual(body);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('/api/trees/my%20tree/nodes/restore');
+    expect(init.method).toBe('POST');
+    expect(sentBody(fetchMock)).toEqual({ trashIds: ['a.deleted-1'] });
+  });
+
+  it('moveNodes sends names only when given', async () => {
+    let fetchMock = ok({ moved: {}, nodes: [] });
+    await api.moveNodes('t', ['x/a'], 'p', { 'x/a': 'a' });
+    expect(sentBody(fetchMock)).toEqual({
+      ids: ['x/a'],
+      targetParentId: 'p',
+      names: { 'x/a': 'a' },
+    });
+    fetchMock = ok({ moved: {}, nodes: [] });
+    await api.moveNodes('t', ['x/a'], 'p');
+    expect(sentBody(fetchMock)).not.toHaveProperty('names');
+  });
+
+  it('deleteNodes returns trash ids and the hierarchy', async () => {
+    ok({ deleted: { a: 'a.deleted-1' }, nodes: [] });
+    expect(await api.deleteNodes('t', ['a'])).toEqual({ deleted: { a: 'a.deleted-1' }, nodes: [] });
+  });
+
+  it('deleteNodes defaults deleted for an older server', async () => {
+    ok({ nodes: [] });
+    expect(await api.deleteNodes('t', ['a'])).toEqual({ deleted: {}, nodes: [] });
+  });
+
+  it('reads 404 codes', async () => {
+    mockFetch(
+      new Response(JSON.stringify({ error: 'gone', code: 'parent_not_found' }), { status: 404 }),
+    );
+    const error = (await api
+      .restoreNodes('t', ['a.deleted-1'])
+      .catch((e: unknown) => e)) as ApiError;
+    expect(error.status).toBe(404);
+    expect(error.code).toBe('parent_not_found');
+  });
+
+  it('renameNode posts id and name and returns the body', async () => {
+    const body = {
+      id: 'x/borrowing-rules',
+      name: 'borrowing-rules',
+      renamed: { 'x/b': 'x/borrowing-rules', 'x/b/c': 'x/borrowing-rules/c' },
+      nodes: [],
+    };
+    const fetchMock = ok(body);
+    expect(await api.renameNode('my tree', 'x/b', 'Borrowing Rules')).toEqual(body);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('/api/trees/my%20tree/nodes/rename');
+    expect(init.method).toBe('POST');
+    expect(sentBody(fetchMock)).toEqual({ id: 'x/b', name: 'Borrowing Rules' });
+  });
+
+  it('renameNode carries 409 and 404 codes', async () => {
+    mockFetch(
+      new Response(JSON.stringify({ error: 'busy', code: 'tree_busy_structural' }), {
+        status: 409,
+      }),
+    );
+    let error = (await api.renameNode('t', 'a', 'b').catch((e: unknown) => e)) as ApiError;
+    expect(error.status).toBe(409);
+    expect(error.code).toBe('tree_busy_structural');
+    mockFetch(
+      new Response(JSON.stringify({ error: 'gone', code: 'tree_not_found' }), { status: 404 }),
+    );
+    error = (await api.renameNode('t', 'a', 'b').catch((e: unknown) => e)) as ApiError;
+    expect(error.status).toBe(404);
+    expect(error.code).toBe('tree_not_found');
+  });
+
+  it('updateTree returns the new id and previous', async () => {
+    const body = {
+      id: 'rust',
+      title: 'Rust',
+      created: 'c',
+      instructions: '',
+      previous: { id: 'rust-basics', title: 'Rust basics' },
+    };
+    const fetchMock = ok(body);
+    expect(await api.updateTree('rust-basics', { title: 'Rust' })).toEqual(body);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('/api/trees/rust-basics');
+    expect(init.method).toBe('PATCH');
+    expect(sentBody(fetchMock)).toEqual({ title: 'Rust' });
+  });
+
+  it('updateTree defaults previous for an older server', async () => {
+    ok({ id: 't', title: 'New', created: 'c', instructions: '' });
+    expect(await api.updateTree('t', { title: 'New' })).toEqual({
+      id: 't',
+      title: 'New',
+      created: 'c',
+      instructions: '',
+      previous: { id: 't', title: 'New' },
+    });
+  });
+
+  it('ignores unknown 404 codes', async () => {
+    mockFetch(new Response(JSON.stringify({ error: 'gone', code: 'nope' }), { status: 404 }));
+    const error = (await api
+      .restoreNodes('t', ['a.deleted-1'])
+      .catch((e: unknown) => e)) as ApiError;
+    expect(error.code).toBeUndefined();
+  });
+});
+
 const upload = (name: string, body = 'data', type = '') => new File([body], name, { type });
 
 const pdfInfo = { name: 'a.pdf', size: 4, contentType: 'application/pdf', kind: 'pdf' as const };

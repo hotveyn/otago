@@ -6,17 +6,21 @@ import type {
   AttachmentInfo,
   ChainNode,
   ConflictCode,
+  DeleteResult,
   ErrorBody,
   FileFolder,
-  HierarchyNode,
   MessageDone,
   MessagePayload,
   MessageUploadErrorCode,
   ModelsInfo,
   MoveResult,
+  NotFoundCode,
+  RenameNodeResult,
+  RestoreResult,
   SourceInfo,
   TreeDetail,
   TreeMeta,
+  UpdateTreeResult,
   UserFileInfo,
 } from './types';
 
@@ -24,13 +28,15 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
-    /** Set for 409 tree-lock conflicts and message-upload rejections from a server that sends it. */
-    readonly code?: ConflictCode | MessageUploadErrorCode,
+    /** Set for 409 tree-lock conflicts, 404 reasons and message-upload rejections (if sent). */
+    readonly code?: ApiErrorCode,
   ) {
     super(message);
     this.name = 'ApiError';
   }
 }
+
+export type ApiErrorCode = ConflictCode | MessageUploadErrorCode | NotFoundCode;
 
 const CONFLICT_CODES: readonly string[] = [
   'tree_busy_streaming',
@@ -47,13 +53,22 @@ const UPLOAD_ERROR_CODES: readonly string[] = [
   'file_too_large',
 ] satisfies MessageUploadErrorCode[];
 
-const isErrorCode = (value: unknown): value is ConflictCode | MessageUploadErrorCode =>
+const NOT_FOUND_CODES: readonly string[] = [
+  'node_not_found',
+  'parent_not_found',
+  'trash_not_found',
+  'tree_not_found',
+] satisfies NotFoundCode[];
+
+const isErrorCode = (value: unknown): value is ApiErrorCode =>
   typeof value === 'string' &&
-  (CONFLICT_CODES.includes(value) || UPLOAD_ERROR_CODES.includes(value));
+  (CONFLICT_CODES.includes(value) ||
+    UPLOAD_ERROR_CODES.includes(value) ||
+    NOT_FOUND_CODES.includes(value));
 
 async function errorOf(res: Response): Promise<ApiError> {
   let message = `${res.status} ${res.statusText}`;
-  let code: ConflictCode | MessageUploadErrorCode | undefined;
+  let code: ApiErrorCode | undefined;
   try {
     const body = (await res.json()) as Partial<ErrorBody>;
     if (body.error) message = body.error;
@@ -119,8 +134,13 @@ export const api = {
   createTree: (input: { title: string; instructions?: string }) =>
     request<TreeMeta>('/trees', json('POST', input)),
   getTree: (id: string) => request<TreeDetail>(tree(id)),
+  /** A `title` in the patch may rename the tree folder: the result carries the new `id`. */
   updateTree: (id: string, patch: { title?: string; instructions?: string }) =>
-    request<TreeMeta>(tree(id), json('PATCH', patch)),
+    request<Omit<UpdateTreeResult, 'previous'> & Partial<Pick<UpdateTreeResult, 'previous'>>>(
+      tree(id),
+      json('PATCH', patch),
+      // Defensive: an older server does not report `previous` (and never renames).
+    ).then((r): UpdateTreeResult => ({ ...r, previous: r.previous ?? { id, title: r.title } })),
   getChain: (id: string, node: string) =>
     request<{ chain: ChainNode[] }>(`${tree(id)}/chain?node=${encodeURIComponent(node)}`).then(
       // Defensive: an older server omits the fields.
@@ -152,11 +172,18 @@ export const api = {
     request<void>(`${tree(id)}/sources/${encodeURIComponent(file)}`, { method: 'DELETE' }),
 
   deleteNodes: (id: string, ids: string[]) =>
-    request<{ nodes: HierarchyNode[] }>(`${tree(id)}/nodes/delete`, json('POST', { ids })).then(
-      (r) => r.nodes,
-    ),
-  moveNodes: (id: string, ids: string[], targetParentId: string) =>
-    request<MoveResult>(`${tree(id)}/nodes/move`, json('POST', { ids, targetParentId })),
+    request<Partial<DeleteResult> & Pick<DeleteResult, 'nodes'>>(
+      `${tree(id)}/nodes/delete`,
+      json('POST', { ids }),
+      // Defensive: an older server does not report trash ids (then nothing can be undone).
+    ).then((r): DeleteResult => ({ deleted: r.deleted ?? {}, nodes: r.nodes })),
+  /** `names` (selected id → desired folder name) is omitted from the body when undefined. */
+  moveNodes: (id: string, ids: string[], targetParentId: string, names?: Record<string, string>) =>
+    request<MoveResult>(`${tree(id)}/nodes/move`, json('POST', { ids, targetParentId, names })),
+  restoreNodes: (id: string, trashIds: string[]) =>
+    request<RestoreResult>(`${tree(id)}/nodes/restore`, json('POST', { trashIds })),
+  renameNode: (id: string, nodeId: string, name: string) =>
+    request<RenameNodeResult>(`${tree(id)}/nodes/rename`, json('POST', { id: nodeId, name })),
 
   getModels: () => request<ModelsInfo>('/models'),
 };

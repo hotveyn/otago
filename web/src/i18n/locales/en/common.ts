@@ -12,7 +12,7 @@ export const common = {
   line: 'line {{start}}',
   lines: 'lines {{start}}–{{end}}',
   errors: {
-    busyStructural: 'Nodes are being moved or deleted. Try again in a moment.',
+    busyStructural: 'Nodes are being moved, renamed or deleted. Try again in a moment.',
     busyStreaming: 'An answer is still streaming. Try again when it finishes.',
     nodeMissing: 'The node this side chat branches from no longer exists (moved or deleted).',
     emptyResponse: 'Empty response',

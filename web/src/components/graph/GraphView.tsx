@@ -15,7 +15,18 @@ import { api } from '../../api/client';
 import { keys } from '../../api/queries';
 import type { TreeDetail } from '../../api/types';
 import { describeError } from '../../lib/chat-errors';
-import { afterDelete, afterMove, canMoveTo, chainIds, flatten, topLevelIds } from '../../lib/tree';
+import { renameTargetOf } from '../../lib/rename';
+import {
+  afterDelete,
+  afterMove,
+  canMoveTo,
+  chainIds,
+  findNode,
+  flatten,
+  nameOf,
+  topLevelIds,
+} from '../../lib/tree';
+import type { AppliedStep } from '../../lib/undo-history';
 import { Button } from '../ui/Button';
 import { ErrorNote } from '../ui/ErrorNote';
 import { BoxNode as BoxNodeComponent } from './BoxNode';
@@ -27,8 +38,9 @@ import {
   layoutTree,
   loadLabelFonts,
 } from './layout';
-import { DeleteDialog, MoveDialog } from './NodeDialogs';
+import { DeleteDialog, MoveDialog, RenameDialog } from './NodeDialogs';
 import { TreeEdge } from './TreeEdge';
+import { useTreeUndo } from './useTreeUndo';
 
 const nodeTypes = { box: BoxNodeComponent };
 const edgeTypes = { tree: TreeEdge };
@@ -68,15 +80,17 @@ interface GraphViewProps {
   currentId: string;
   busy: boolean;
   onSelectNode: (id: string) => void;
-  /** Current node changed because of a delete/move; replaces the history entry. */
+  /** Current node changed because of a delete/move/rename; replaces the history entry. */
   onCurrentChange: (id: string) => void;
-  /** Nodes were moved or deleted (after the hierarchy cache is updated). */
+  /** Nodes were moved, renamed or deleted (after the hierarchy cache is updated). */
   onNodesChanged?: (change: NodesChange) => void;
 }
 
 export type NodesChange =
   | { kind: 'move'; moved: Record<string, string> }
-  | { kind: 'delete'; ids: string[] };
+  | { kind: 'delete'; ids: string[] }
+  /** `renamed` = full old → new id map (the renamed node and every descendant). */
+  | { kind: 'rename'; renamed: Record<string, string> };
 
 export function GraphView(props: GraphViewProps) {
   return (
@@ -99,7 +113,9 @@ function Graph({
   const flow = useReactFlow<BoxNode>();
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [dropTarget, setDropTarget] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<'delete' | 'move' | null>(null);
+  const [dialog, setDialog] = useState<'delete' | 'move' | 'rename' | null>(null);
+  /** Rename target, frozen when the dialog opens. */
+  const [renameId, setRenameId] = useState('');
 
   const fontsVersion = useFontsVersion();
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-measure once fonts load
@@ -267,21 +283,40 @@ function Graph({
     [],
   );
 
-  const applyHierarchy = (nodesAfter: TreeDetail['nodes']) => {
-    queryClient.setQueryData<TreeDetail>(keys.tree(tree.id), (old) =>
+  const applyHierarchy = (nodesAfter: TreeDetail['nodes'], treeId = tree.id) => {
+    queryClient.setQueryData<TreeDetail>(keys.tree(treeId), (old) =>
       old ? { ...old, nodes: nodesAfter } : old,
     );
-    queryClient.removeQueries({ queryKey: ['chain', tree.id] });
+    queryClient.removeQueries({ queryKey: ['chain', treeId] });
+  };
+
+  // Latest values for the undo callback, which may resolve after a re-render or tree switch.
+  const live = useRef({ treeId: tree.id, currentId, onCurrentChange, onNodesChanged });
+  useEffect(() => {
+    live.current = { treeId: tree.id, currentId, onCurrentChange, onNodesChanged };
+  });
+
+  const onUndoApplied = (treeId: string, { nodes: nodesAfter, fixups, kind }: AppliedStep) => {
+    applyHierarchy(nodesAfter, treeId);
+    const now = live.current;
+    if (treeId !== now.treeId || Object.keys(fixups).length === 0) return;
+    // The current node is never inside the trash, so only an undone move can carry it along.
+    if (kind === 'move') {
+      const next = afterMove(now.currentId, fixups);
+      if (next !== now.currentId) now.onCurrentChange(next);
+    }
+    now.onNodesChanged?.({ kind: 'move', moved: fixups });
   };
 
   const remove = useMutation({
     mutationFn: (ids: string[]) => api.deleteNodes(tree.id, ids),
-    onSuccess: (nodesAfter, ids) => {
-      applyHierarchy(nodesAfter);
+    onSuccess: (result, ids) => {
+      applyHierarchy(result.nodes);
       setSelection(new Set());
       setDialog(null);
       onCurrentChange(afterDelete(currentId, ids));
       onNodesChanged?.({ kind: 'delete', ids });
+      undo.recordDelete(result.deleted);
     },
   });
 
@@ -294,18 +329,48 @@ function Graph({
       setDialog(null);
       onCurrentChange(afterMove(currentId, result.moved));
       onNodesChanged?.({ kind: 'move', moved: result.moved });
+      undo.recordMove(result.moved);
     },
     onError: () => animateTo(layout.nodes),
   });
 
-  const actionError = remove.error ?? move.error;
+  const rename = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => api.renameNode(tree.id, id, name),
+    onSuccess: (result) => {
+      applyHierarchy(result.nodes);
+      setSelection(new Set());
+      setDialog(null);
+      const next = afterMove(currentId, result.renamed);
+      if (next !== currentId) onCurrentChange(next);
+      onNodesChanged?.({ kind: 'rename', renamed: result.renamed });
+      undo.remap(result.renamed);
+    },
+  });
+
+  const undo = useTreeUndo({
+    treeId: tree.id,
+    streaming: busy,
+    blocked: dialog !== null || remove.isPending || move.isPending || rename.isPending,
+    onApplied: onUndoApplied,
+  });
+  /** Structural edits are paused while an answer streams or an undo runs. */
+  const frozen = busy || undo.pending;
+
+  const actionError = remove.error ?? move.error ?? rename.error;
   const resetErrors = () => {
     remove.reset();
     move.reset();
+    rename.reset();
   };
   const openDialog = (kind: 'delete' | 'move') => {
     resetErrors();
     setDialog(kind);
+  };
+  const renameTarget = renameTargetOf(selection, currentId);
+  const openRename = (target: string) => {
+    resetErrors();
+    setRenameId(target);
+    setDialog('rename');
   };
 
   const onNodeClick: NodeMouseHandler<BoxNode> = (event, node) => {
@@ -350,7 +415,7 @@ function Graph({
     const target = findDropTarget(node);
     setDropTarget(null);
     animateTo(layout.nodes);
-    if (!target || busy) return;
+    if (!target || frozen) return;
     resetErrors();
     move.mutate({ ids: dragIds(node), target: target.data.nodeId });
   };
@@ -380,22 +445,44 @@ function Graph({
                 </span>
               )}
             </span>
-            <Button size="sm" variant="danger" disabled={busy} onClick={() => openDialog('delete')}>
+            <Button
+              size="sm"
+              variant="danger"
+              disabled={frozen}
+              onClick={() => openDialog('delete')}
+            >
               {t('common:delete')}
             </Button>
-            <Button size="sm" disabled={busy} onClick={() => openDialog('move')}>
+            <Button size="sm" disabled={frozen} onClick={() => openDialog('move')}>
               {t('moveTo')}
             </Button>
+            {renameTarget !== null && (
+              <Button size="sm" disabled={frozen} onClick={() => openRename(renameTarget)}>
+                {t('rename')}
+              </Button>
+            )}
             <Button size="sm" variant="ghost" onClick={() => setSelection(new Set())}>
               {t('clear')}
             </Button>
           </>
         ) : (
-          <span className="muted small">{t('hint')}</span>
+          <>
+            <span className="muted small">{t('hint')}</span>
+            {renameTarget !== null && (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={frozen}
+                onClick={() => openRename(renameTarget)}
+              >
+                {t('rename')}
+              </Button>
+            )}
+          </>
         )}
         {busy && <span className="muted small">{t('busy')}</span>}
       </div>
-      {actionError && dialog === null && (
+      {actionError && dialog === null ? (
         <div className="graph-error">
           <ErrorNote
             error={actionError}
@@ -403,6 +490,16 @@ function Graph({
             onDismiss={resetErrors}
           />
         </div>
+      ) : (
+        undo.toast && (
+          <div className="graph-error">
+            <ErrorNote
+              key={undo.toast.key}
+              error={undo.toast.message}
+              onDismiss={undo.dismissToast}
+            />
+          </div>
+        )
       )}
 
       <ReactFlow<BoxNode>
@@ -415,7 +512,7 @@ function Graph({
         onNodeDrag={onNodeDrag}
         onNodeDragStop={onNodeDragStop}
         onPaneClick={() => setSelection(new Set())}
-        nodesDraggable={!busy}
+        nodesDraggable={!frozen}
         nodesConnectable={false}
         elementsSelectable={false}
         selectionKeyCode={null}
@@ -444,6 +541,14 @@ function Graph({
         pending={move.isPending}
         error={move.error}
         onConfirm={(target) => move.mutate({ ids: selected, target })}
+        onClose={() => setDialog(null)}
+      />
+      <RenameDialog
+        open={dialog === 'rename'}
+        currentName={findNode(tree.nodes, renameId)?.name ?? nameOf(renameId)}
+        pending={rename.isPending}
+        error={rename.error}
+        onConfirm={(name) => rename.mutate({ id: renameId, name })}
         onClose={() => setDialog(null)}
       />
     </div>

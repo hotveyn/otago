@@ -276,7 +276,8 @@ describe('POST /api/trees/:tree/messages', () => {
     expect(res.statusCode).toBe(409);
     expect(res.headers['content-type']).toContain('application/json');
     expect(res.json()).toEqual({
-      error: 'Tree "rust" is busy: nodes are being moved or deleted. Try again in a moment.',
+      error:
+        'Tree "rust" is busy: nodes are being moved, renamed or deleted. Try again in a moment.',
       code: 'tree_busy_structural',
     });
     expect(agent.calls).toEqual([]);
@@ -332,6 +333,22 @@ describe('POST /api/trees/:tree/messages', () => {
     expect(res.statusCode).toBe(404);
     expect(res.json()).toEqual({ error: 'Node not found: anchor' });
     expect(ctx.locks.status('rust')).toEqual(IDLE);
+  });
+
+  it('404 tree_not_found (JSON, no SSE) for the old id after a tree rename', async () => {
+    await setup(fakeAgent());
+    const renamed = await ctx.app.inject({
+      method: 'PATCH',
+      url: '/api/trees/rust',
+      payload: { title: 'Rust Basics' },
+    });
+    expect(renamed.json().id).toBe('rust-basics');
+    const res = await post({ parentId: '', text: 'Q' });
+    expect(res.statusCode).toBe(404);
+    expect(res.headers['content-type']).toContain('application/json');
+    expect(res.json().code).toBe('tree_not_found');
+    expect(await readdir(ctx.treesDir)).toEqual(['rust-basics']);
+    expect((await post({ parentId: '', text: 'Q' }, 'rust-basics')).statusCode).toBe(200);
   });
 
   it('client disconnect → nothing written, lock released', async () => {

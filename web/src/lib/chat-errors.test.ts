@@ -7,7 +7,7 @@ describe('describeError', () => {
     const error = new ApiError(409, 'Tree "t" is busy', 'tree_busy_structural');
     expect(describeError(error)).toEqual({
       kind: 'busy-structural',
-      message: 'Nodes are being moved or deleted. Try again in a moment.',
+      message: 'Nodes are being moved, renamed or deleted. Try again in a moment.',
     });
   });
 
@@ -31,6 +31,11 @@ describe('describeError', () => {
     expect(describeError(error)).toEqual({ kind: 'node-missing', message: 'Node not found: a/b' });
     expect(isNodeMissing(error)).toBe(true);
     expect(isNodeMissing(new ApiError(404, 'Tree not found: t'))).toBe(false);
+  });
+
+  it('detects a missing node by its 404 code', () => {
+    expect(isNodeMissing(new ApiError(404, 'gone', 'node_not_found'))).toBe(true);
+    expect(isNodeMissing(new ApiError(404, 'gone', 'parent_not_found'))).toBe(false);
   });
 
   it('uses the message of a plain Error', () => {

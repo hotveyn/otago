@@ -33,6 +33,8 @@ User files:
 - Cite a user file like a source: \`files/<name>:<start>-<end>\` for the current message, \`<node-id>/files/<name>:<start>-<end>\` for earlier messages. Never mention the temporary \`.tmp-answer-…\` path in the answer.
 - User files are read-only and are not attachments: never link them with \`attachments/…\`.
 
+Ignore folders whose name contains \`.deleted-\`; they are deleted nodes.
+
 Never try to modify files; the only way to create a file is \`save_attachment\`. Answer only with the final answer text in Markdown.`;
 
 export function buildSystemPrompt(instructions: string): string {

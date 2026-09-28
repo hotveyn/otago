@@ -3,7 +3,7 @@ export class AppError extends Error {
     readonly statusCode: number,
     message: string,
     /** Optional machine-readable code sent as `code` in the JSON error body. */
-    readonly code?: ConflictCode | UploadErrorCode | (string & {}),
+    readonly code?: ConflictCode | UploadErrorCode | NotFoundCode | (string & {}),
     /** Optional extra data sent as `details` in the JSON error body. */
     readonly details?: unknown,
   ) {
@@ -12,9 +12,16 @@ export class AppError extends Error {
   }
 }
 
+/** Machine-readable reason of a 404. */
+export type NotFoundCode =
+  | 'node_not_found'
+  | 'parent_not_found'
+  | 'trash_not_found'
+  | 'tree_not_found';
+
 export class NotFoundError extends AppError {
-  constructor(message: string) {
-    super(404, message);
+  constructor(message: string, code?: NotFoundCode) {
+    super(404, message, code);
   }
 }
 

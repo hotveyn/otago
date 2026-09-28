@@ -1,6 +1,6 @@
-import { useQuery } from '@tanstack/react-query';
+import { type QueryClient, useQuery } from '@tanstack/react-query';
 import { api } from './client';
-import type { FileFolder } from './types';
+import type { FileFolder, SourceInfo, TreeDetail, TreeMeta } from './types';
 
 export const keys = {
   trees: ['trees'] as const,
@@ -28,6 +28,33 @@ export const keys = {
     folder: FileFolder = 'attachments',
   ) => ['attachment-blob', tree, node, folder, name, size] as const,
 };
+
+/**
+ * Tree rename, first half (before the URL switches): seed the caches of the new tree id from
+ * the old one, so nothing refetches or flashes while the view moves over. Node ids and sources
+ * are tree-relative, so they carry over unchanged. The caller still invalidates `keys.trees`.
+ */
+export function moveTreeCaches(queryClient: QueryClient, from: string, updated: TreeMeta): void {
+  const meta: TreeMeta = {
+    id: updated.id,
+    title: updated.title,
+    created: updated.created,
+    instructions: updated.instructions,
+  };
+  const detail = queryClient.getQueryData<TreeDetail>(keys.tree(from));
+  if (detail) queryClient.setQueryData<TreeDetail>(keys.tree(meta.id), { ...detail, ...meta });
+  const sources = queryClient.getQueryData<SourceInfo[]>(keys.sources(from));
+  if (sources) queryClient.setQueryData<SourceInfo[]>(keys.sources(meta.id), sources);
+  queryClient.setQueryData<TreeMeta[]>(keys.trees, (list) =>
+    list?.map((item) => (item.id === from ? meta : item)),
+  );
+}
+
+/** Tree rename, second half (after the navigation rendered): forget every cache of the old id. */
+export function dropTreeCaches(queryClient: QueryClient, treeId: string): void {
+  for (const kind of ['tree', 'chain', 'sources', 'source', 'attachment', 'attachment-blob'])
+    queryClient.removeQueries({ queryKey: [kind, treeId] });
+}
 
 export const useTrees = () => useQuery({ queryKey: keys.trees, queryFn: api.listTrees });
 

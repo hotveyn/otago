@@ -10,7 +10,9 @@ import {
   SAVE_ATTACHMENT_TOOL_ID,
   SYSTEM_RULES,
   sanitizeNodeName,
+  TRASH_DENY_REASON,
   TreeLocks,
+  touchesDeletedPath,
 } from '../src/agent/index.js';
 
 const noStaging: AttachmentStaging = {
@@ -252,7 +254,7 @@ describe('TreeLocks', () => {
     expect(() => locks.acquireShared('a')).toThrow(conflict('tree_busy_structural'));
     expect(() => locks.acquireExclusive('a')).toThrow(conflict('tree_busy_structural'));
     expect(() => locks.acquireShared('a')).toThrow(
-      'Tree "a" is busy: nodes are being moved or deleted. Try again in a moment.',
+      'Tree "a" is busy: nodes are being moved, renamed or deleted. Try again in a moment.',
     );
     expect(locks.status('a')).toEqual({ shared: 0, exclusive: true });
   });
@@ -303,5 +305,76 @@ describe('TreeLocks', () => {
     ).rejects.toThrow('y');
     expect(locks.isLocked('a')).toBe(false);
     expect(await locks.withShared('a', async () => 42)).toBe(42);
+  });
+});
+
+describe('trash guard', () => {
+  const trash = 'ownership/borrowing.deleted-1759000000000';
+
+  it('detects Read/Grep/Glob inputs touching soft-deleted folders', () => {
+    expect(touchesDeletedPath('Read', { file_path: `${trash}/node.md` })).toBe(true);
+    expect(touchesDeletedPath('Read', { file_path: `/trees/rust/${trash}/node.md` })).toBe(true);
+    expect(touchesDeletedPath('Grep', { pattern: 'x', path: trash })).toBe(true);
+    expect(touchesDeletedPath('Grep', { pattern: 'x', glob: '*.deleted-*/**' })).toBe(true);
+    expect(touchesDeletedPath('Glob', { pattern: '**/*.deleted-*/node.md' })).toBe(true);
+    expect(touchesDeletedPath('Glob', { pattern: '*.md', path: trash })).toBe(true);
+  });
+
+  it('allows normal paths and other tools', () => {
+    expect(touchesDeletedPath('Read', { file_path: 'sources/book.md' })).toBe(false);
+    expect(touchesDeletedPath('Grep', { pattern: '.deleted-', path: 'sources' })).toBe(false);
+    expect(touchesDeletedPath('Glob', { pattern: '**/*.md' })).toBe(false);
+    expect(touchesDeletedPath('WebFetch', { url: `https://x/${trash}` })).toBe(false);
+    expect(touchesDeletedPath('Read', null)).toBe(false);
+  });
+
+  it('buildAskOptions wires the deny rule and the PreToolUse hook', async () => {
+    const options = buildAskOptions(
+      { treeDir: '/trees/rust', instructions: '', model: 'm', staging: noStaging },
+      new AbortController(),
+    );
+    const settings = options.settings as { permissions?: { deny?: string[] } };
+    expect(settings.permissions?.deny).toEqual(['Read(**/*.deleted-*/**)']);
+    const matchers = options.hooks?.PreToolUse ?? [];
+    expect(matchers).toHaveLength(1);
+    expect(matchers[0]?.matcher).toBe('Read|Grep|Glob');
+    const hook = matchers[0]?.hooks[0];
+    if (!hook) throw new Error('hook missing');
+    const base = { session_id: 's', transcript_path: 't', cwd: '/trees/rust' };
+    const signal = new AbortController().signal;
+    const denied = await hook(
+      {
+        ...base,
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Read',
+        tool_input: { file_path: `${trash}/node.md` },
+        tool_use_id: 'u1',
+      },
+      'u1',
+      { signal },
+    );
+    expect(denied).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: TRASH_DENY_REASON,
+      },
+    });
+    const allowed = await hook(
+      {
+        ...base,
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Read',
+        tool_input: { file_path: 'sources/book.md' },
+        tool_use_id: 'u2',
+      },
+      'u2',
+      { signal },
+    );
+    expect(allowed).toEqual({});
+  });
+
+  it('the system prompt tells the agent to ignore deleted folders', () => {
+    expect(SYSTEM_RULES).toContain('Ignore folders whose name contains `.deleted-`');
   });
 });

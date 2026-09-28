@@ -1,24 +1,36 @@
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { claimUniqueName } from '../src/storage/fs-utils.js';
 import {
   createAnswerStaging,
   createNode,
   createTree,
   createUserFileStager,
+  DELETED_NAME_RE,
+  deletedNameFor,
+  deleteNodes,
+  isDeletedName,
   type NodeFile,
   nodeDirOf,
+  nodeExists,
   nodeIdSegments,
   parseNodeFile,
+  parseTrashId,
   parseTreeFile,
   readChain,
   readHierarchy,
+  readTree,
+  renameNode,
+  restoreNodes,
+  saveSource,
   serializeNodeFile,
   serializeTreeFile,
   toKebabCase,
+  trashDirOf,
   treeDirOf,
+  updateTree,
 } from '../src/storage/index.js';
 import { makeTempDir } from './helpers.js';
 
@@ -296,6 +308,21 @@ describe('claimUniqueName', () => {
     expect((await claimUniqueName(dir, 'x')).name).toBe('x-2');
   });
 
+  it('counts `self` as free', async () => {
+    await mkdir(path.join(dir, 'foo'));
+    await mkdir(path.join(dir, 'foo-2'));
+    await mkdir(path.join(dir, 'foo-5'));
+    const pick = async (base: string, self: string, reserved?: Set<string>) => {
+      const claim = await claimUniqueName(dir, base, reserved, { self });
+      claim.release();
+      return claim.name;
+    };
+    expect(await pick('foo', 'foo')).toBe('foo');
+    expect(await pick('foo', 'foo-2')).toBe('foo-2');
+    expect(await pick('bar', 'foo-5')).toBe('bar');
+    expect(await pick('foo', 'foo', new Set(['foo']))).toBe('foo-3');
+  });
+
   it('treats a missing dir as empty', async () => {
     const claim = await claimUniqueName(path.join(dir, 'missing'), 'y');
     expect(claim.name).toBe('y');
@@ -334,5 +361,307 @@ describe('path safety', () => {
     expect(toKebabCase('Café crème')).toBe('cafe-creme');
     expect(toKebabCase('Привет')).toBe('node');
     expect(toKebabCase('../../etc')).toBe('etc');
+  });
+});
+
+describe('soft-delete naming', () => {
+  const now = 1759000000000;
+
+  it('builds and recognizes trash folder names', () => {
+    expect(deletedNameFor('borrowing-rules', now)).toBe('borrowing-rules.deleted-1759000000000');
+    expect(deletedNameFor('a', now, 2)).toBe('a.deleted-1759000000000-2');
+    for (const name of [deletedNameFor('a', now), deletedNameFor('a-b', now, 3)]) {
+      expect(isDeletedName(name), name).toBe(true);
+    }
+    expect(DELETED_NAME_RE.exec(deletedNameFor('x-y', now, 12))?.groups).toMatchObject({
+      name: 'x-y',
+      ts: String(now),
+      n: '12',
+    });
+    for (const name of [
+      'a',
+      'a-deleted-1759000000000',
+      'a.deleted-12',
+      'a.deleted-1759000000000-1',
+      'A.deleted-1759000000000',
+    ]) {
+      expect(isDeletedName(name), name).toBe(false);
+    }
+  });
+
+  it('parses trash ids', () => {
+    expect(parseTrashId('a.deleted-1759000000000')).toEqual({
+      parentId: '',
+      folder: 'a.deleted-1759000000000',
+      originalName: 'a',
+      deletedAt: now,
+    });
+    expect(parseTrashId('x/y/rules.deleted-1759000000000-2')).toEqual({
+      parentId: 'x/y',
+      folder: 'rules.deleted-1759000000000-2',
+      originalName: 'rules',
+      deletedAt: now,
+    });
+    expect(trashDirOf('/trees/rust', 'x/a.deleted-1759000000000')).toBe(
+      path.resolve('/trees/rust/x/a.deleted-1759000000000'),
+    );
+    for (const bad of [
+      '',
+      '../x.deleted-1759000000000',
+      'x.deleted-1759000000000/..',
+      'x',
+      'x/y',
+      'Bad/x.deleted-1759000000000',
+      'sources/x.deleted-1759000000000',
+      'a/files/x.deleted-1759000000000',
+      'sources.deleted-1759000000000',
+      'a\\x.deleted-1759000000000',
+      '/abs/x.deleted-1759000000000',
+    ]) {
+      expect(() => parseTrashId(bad), bad).toThrow(/Invalid trash id/);
+    }
+  });
+});
+
+describe('soft-deleted folders are invisible', () => {
+  let dir: string;
+  let cleanup: () => Promise<void>;
+  let treeDir: string;
+  const trash = 'foo.deleted-1759000000000';
+
+  beforeEach(async () => {
+    ({ dir, cleanup } = await makeTempDir());
+    const tree = await createTree(dir, { title: 'Rust' });
+    treeDir = path.join(dir, tree.id);
+    await createNode(treeDir, '', 'live', node('2026-09-23T10:00:00Z'));
+    for (const at of [treeDir, path.join(treeDir, 'live')]) {
+      await mkdir(path.join(at, trash), { recursive: true });
+      await writeFile(
+        path.join(at, trash, 'node.md'),
+        serializeNodeFile(node('2026-09-23T11:00:00Z')),
+      );
+    }
+  });
+  afterEach(() => cleanup());
+
+  it('readHierarchy skips trash folders at root and nested', async () => {
+    const nodes = await readHierarchy(treeDir);
+    expect(nodes.map((n) => n.id)).toEqual(['live']);
+    expect(nodes[0]?.children).toEqual([]);
+  });
+
+  it('readChain / nodeExists reject trash paths as invalid ids', async () => {
+    await expect(readChain(treeDir, trash)).rejects.toMatchObject({ statusCode: 400 });
+    await expect(nodeExists(treeDir, `live/${trash}`)).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it('createNode with the same slug as a trashed sibling gets the plain name', async () => {
+    expect(await createNode(treeDir, '', 'foo', node('2026-09-23T12:00:00Z'))).toBe('foo');
+  });
+
+  it('deleteNodes adds a -2 counter when the trash name exists', async () => {
+    await createNode(treeDir, '', 'foo', node('2026-09-23T12:00:00Z'));
+    const first = await deleteNodes(treeDir, ['foo'], 1759000000000);
+    expect(first).toEqual({ foo: 'foo.deleted-1759000000000-2' });
+    await createNode(treeDir, '', 'foo', node('2026-09-23T12:00:00Z'));
+    // An empty folder with the next name must not be overwritten.
+    await mkdir(path.join(treeDir, 'foo.deleted-1759000000000-3'));
+    const second = await deleteNodes(treeDir, ['foo'], 1759000000000);
+    expect(second).toEqual({ foo: 'foo.deleted-1759000000000-4' });
+    expect(await readdir(path.join(treeDir, 'foo.deleted-1759000000000-3'))).toEqual([]);
+  });
+});
+
+describe('renameNode', () => {
+  let treeDir: string;
+  let cleanup: () => Promise<void>;
+  let minute: number;
+  const add = (parent: string, name: string) =>
+    createNode(
+      treeDir,
+      parent,
+      name,
+      node(new Date(Date.UTC(2026, 8, 23, 10, minute++)).toISOString()),
+    );
+
+  beforeEach(async () => {
+    ({ dir: treeDir, cleanup } = await makeTempDir());
+    minute = 0;
+    await writeFile(
+      path.join(treeDir, 'tree.md'),
+      serializeTreeFile({ title: 'T', created: '2026-09-23T09:00:00Z', instructions: '' }),
+    );
+    await add('', 'a');
+    await add('a', 'b');
+    await add('a/b', 'c');
+    await add('', 'foo');
+    await add('', 'foo-2');
+  });
+  afterEach(() => cleanup());
+
+  it('renames the folder and keeps the content', async () => {
+    const before = await readFile(path.join(treeDir, 'a', 'node.md'), 'utf8');
+    const result = await renameNode(treeDir, 'a', 'Borrowing Rules');
+    expect(result).toEqual({
+      id: 'borrowing-rules',
+      name: 'borrowing-rules',
+      renamed: { a: 'borrowing-rules', 'a/b': 'borrowing-rules/b', 'a/b/c': 'borrowing-rules/b/c' },
+    });
+    expect(Object.keys(result.renamed)[0]).toBe('a');
+    expect(await readFile(path.join(treeDir, 'borrowing-rules', 'node.md'), 'utf8')).toBe(before);
+    expect(await nodeExists(treeDir, 'a')).toBe(false);
+    expect(await nodeExists(treeDir, 'borrowing-rules/b/c')).toBe(true);
+  });
+
+  it('renames a nested node', async () => {
+    const result = await renameNode(treeDir, 'a/b', 'Deep');
+    expect(result.renamed).toEqual({ 'a/b': 'a/deep', 'a/b/c': 'a/deep/c' });
+  });
+
+  it('adds -2 on collision', async () => {
+    await add('', 'borrowing-rules');
+    expect((await renameNode(treeDir, 'a', 'Borrowing rules')).id).toBe('borrowing-rules-2');
+  });
+
+  it('same slug is an identity no-op', async () => {
+    const before = await stat(path.join(treeDir, 'a'));
+    const result = await renameNode(treeDir, 'a', 'A');
+    expect(result).toEqual({
+      id: 'a',
+      name: 'a',
+      renamed: { a: 'a', 'a/b': 'a/b', 'a/b/c': 'a/b/c' },
+    });
+    expect((await stat(path.join(treeDir, 'a'))).ino).toBe(before.ino);
+  });
+
+  it('own name counts as free', async () => {
+    expect((await renameNode(treeDir, 'foo-2', 'Foo')).id).toBe('foo-2');
+  });
+
+  it('never picks reserved names', async () => {
+    expect((await renameNode(treeDir, 'foo', 'Sources')).id).toBe('sources-2');
+    expect((await renameNode(treeDir, 'a/b', 'Files')).id).toBe('a/files-2');
+    expect((await renameNode(treeDir, 'a/files-2', 'Sources')).id).toBe('a/sources');
+  });
+
+  it('falls back to "node" for symbol-only names', async () => {
+    expect((await renameNode(treeDir, 'foo', '!!!')).id).toBe('node');
+    expect((await renameNode(treeDir, 'foo-2', '🎉')).id).toBe('node-2');
+  });
+
+  it('validates input', async () => {
+    await expect(renameNode(treeDir, 'a', '   ')).rejects.toMatchObject({
+      statusCode: 400,
+      message: 'Name is required',
+    });
+    await expect(renameNode(treeDir, '', 'x')).rejects.toMatchObject({
+      statusCode: 400,
+      message: 'The tree root cannot be renamed',
+    });
+    await expect(renameNode(treeDir, 'missing', 'x')).rejects.toMatchObject({
+      statusCode: 404,
+      code: 'node_not_found',
+    });
+    await expect(renameNode(treeDir, '../x', 'x')).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it('ignores soft-deleted siblings and carries trash inside the node', async () => {
+    await add('', 'borrowing-rules');
+    const [top] = Object.values(await deleteNodes(treeDir, ['borrowing-rules']));
+    const [inner] = Object.values(await deleteNodes(treeDir, ['a/b']));
+    expect(top).toMatch(/^borrowing-rules\.deleted-/);
+    const result = await renameNode(treeDir, 'a', 'Borrowing Rules');
+    expect(result.id).toBe('borrowing-rules');
+    expect(result.renamed).toEqual({ a: 'borrowing-rules' });
+    const movedTrash = `borrowing-rules${(inner ?? '').slice('a'.length)}`;
+    expect(await restoreNodes(treeDir, [movedTrash])).toEqual({
+      [movedTrash]: 'borrowing-rules/b',
+    });
+    expect(await nodeExists(treeDir, 'borrowing-rules/b/c')).toBe(true);
+  });
+});
+
+describe('updateTree rename', () => {
+  let treesDir: string;
+  let cleanup: () => Promise<void>;
+  beforeEach(async () => {
+    ({ dir: treesDir, cleanup } = await makeTempDir());
+    await createTree(treesDir, { title: 'Rust', instructions: 'be brief' });
+  });
+  afterEach(() => cleanup());
+
+  it('renames the folder and returns previous', async () => {
+    const lockTarget = vi.fn(() => () => undefined);
+    const result = await updateTree(treesDir, 'rust', { title: 'Rust Basics' }, { lockTarget });
+    expect(result).toMatchObject({
+      id: 'rust-basics',
+      title: 'Rust Basics',
+      instructions: 'be brief',
+      previous: { id: 'rust', title: 'Rust' },
+    });
+    expect(lockTarget).toHaveBeenCalledWith('rust-basics');
+    expect(await readdir(treesDir)).toEqual(['rust-basics']);
+    expect((await readTree(treesDir, 'rust-basics')).title).toBe('Rust Basics');
+  });
+
+  it('same slug keeps the folder', async () => {
+    const lockTarget = vi.fn(() => () => undefined);
+    const result = await updateTree(treesDir, 'rust', { title: 'RUST' }, { lockTarget });
+    expect(result).toMatchObject({
+      id: 'rust',
+      title: 'RUST',
+      previous: { id: 'rust', title: 'Rust' },
+    });
+    expect(lockTarget).not.toHaveBeenCalled();
+  });
+
+  it('collision gets -2, own name counts as free', async () => {
+    await createTree(treesDir, { title: 'Go' });
+    expect((await updateTree(treesDir, 'rust', { title: 'Go' })).id).toBe('go-2');
+    expect((await updateTree(treesDir, 'go-2', { title: 'Go' })).id).toBe('go-2');
+  });
+
+  it('falls back to "tree" for symbol-only titles', async () => {
+    expect((await updateTree(treesDir, 'rust', { title: '!!!' })).id).toBe('tree');
+  });
+
+  it('instructions-only patch never renames or locks', async () => {
+    const lockTarget = vi.fn(() => () => undefined);
+    const result = await updateTree(treesDir, 'rust', { instructions: 'x' }, { lockTarget });
+    expect(result).toMatchObject({ id: 'rust', previous: { id: 'rust', title: 'Rust' } });
+    expect(lockTarget).not.toHaveBeenCalled();
+  });
+
+  it('blank title → 400', async () => {
+    await expect(updateTree(treesDir, 'rust', { title: '  ' })).rejects.toMatchObject({
+      statusCode: 400,
+      message: 'Title is required',
+    });
+  });
+
+  it('a throwing lockTarget renames nothing', async () => {
+    const lockTarget = () => {
+      throw new Error('busy');
+    };
+    await expect(updateTree(treesDir, 'rust', { title: 'Other' }, { lockTarget })).rejects.toThrow(
+      'busy',
+    );
+    expect(await readdir(treesDir)).toEqual(['rust']);
+    expect((await readTree(treesDir, 'rust')).title).toBe('Rust');
+  });
+});
+
+describe('saveSource', () => {
+  it('404 tree_not_found when the tree folder is gone, creates nothing', async () => {
+    const { dir, cleanup } = await makeTempDir();
+    try {
+      const treeDir = path.join(dir, 'gone');
+      await expect(
+        saveSource(treeDir, 'notes.md', new TextEncoder().encode('x')),
+      ).rejects.toMatchObject({ statusCode: 404, code: 'tree_not_found' });
+      expect(await readdir(dir)).toEqual([]);
+    } finally {
+      await cleanup();
+    }
   });
 });

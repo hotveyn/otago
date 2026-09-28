@@ -1,6 +1,7 @@
 /**
  * Mirrors .claude/features/rich-answers/contracts and
- * .claude/features/chat-file-attachments/contracts (server owns the shape).
+ * .claude/features/chat-file-attachments/contracts and
+ * .claude/features/rename-trees-nodes/contracts (server owns the shape).
  * Hand-maintained: there is no codegen in this repo.
  */
 
@@ -120,6 +121,55 @@ export interface MoveResult {
   nodes: HierarchyNode[];
 }
 
+/**
+ * `POST /nodes/rename` response. Mirrors .claude/features/rename-trees-nodes/contracts/rename-api.ts.
+ */
+export interface RenameNodeResult {
+  /** Resulting id of the renamed node. */
+  id: string;
+  /** Resulting folder name (last segment of `id`, `-2`… included). */
+  name: string;
+  /** Old id → new id for the renamed node (first key) and every live descendant. */
+  renamed: Record<string, string>;
+  nodes: HierarchyNode[];
+}
+
+/**
+ * `PATCH /trees/:tree` response: the tree after the update (`id` is new when a title change
+ * renamed the folder). Mirrors .claude/features/rename-trees-nodes/contracts/rename-api.ts.
+ */
+export interface UpdateTreeResult extends TreeMeta {
+  /** Tree id from the request and the title before the update. */
+  previous: { id: string; title: string };
+}
+
+/**
+ * Tree-relative path of a soft-deleted node folder (`<liveParent>/<name>.deleted-<ms>`).
+ * Mirrors .claude/features/tree-undo/contracts/trash.ts.
+ */
+export type TrashId = string;
+
+/** `POST /nodes/delete` response. Mirrors .claude/features/tree-undo/contracts/nodes-api.ts. */
+export interface DeleteResult {
+  /** Top-level deleted node id → TrashId of its soft-deleted folder. */
+  deleted: Record<string, TrashId>;
+  nodes: HierarchyNode[];
+}
+
+/** `POST /nodes/restore` response. Mirrors .claude/features/tree-undo/contracts/nodes-api.ts. */
+export interface RestoreResult {
+  /** TrashId → resulting live node id (original name, or `-2`… if it was taken). */
+  restored: Record<TrashId, string>;
+  nodes: HierarchyNode[];
+}
+
+/** 404 codes. Mirrors .claude/features/tree-undo/contracts/errors.ts. */
+export type NotFoundCode =
+  | 'node_not_found'
+  | 'parent_not_found'
+  | 'trash_not_found'
+  | 'tree_not_found';
+
 /** 409 tree-lock conflict codes. Mirrors .claude/features/side-chat/contracts/errors.ts. */
 export type ConflictCode = 'tree_busy_streaming' | 'tree_busy_structural';
 
@@ -140,8 +190,8 @@ export type MessageUploadErrorCode =
 export interface ErrorBody {
   /** Human-readable, safe to show. Upload errors name the original file name. */
   error: string;
-  /** 409 lock conflicts and message-upload rejections. */
-  code?: ConflictCode | MessageUploadErrorCode;
+  /** 409 lock conflicts, 404 reasons and message-upload rejections. */
+  code?: ConflictCode | MessageUploadErrorCode | NotFoundCode;
   /** Present only on 400 schema validation errors. */
   details?: unknown;
 }

@@ -342,12 +342,18 @@ describe('answers with attachments', () => {
     ]);
     expect((await getAttachment('node=topic-2/topic&name=memory-layout.svg')).statusCode).toBe(200);
 
-    await ctx.app.inject({
+    const deleted = await ctx.app.inject({
       method: 'POST',
       url: '/api/trees/rust/nodes/delete',
       payload: { ids: ['topic-2'] },
     });
-    expect(await readdir(treeDir())).toEqual(['tree.md']);
+    // Soft delete: the subtree (attachments included) travels into the trash folder.
+    const trashId: string = deleted.json().deleted['topic-2'];
+    expect(await readdir(treeDir())).toEqual([trashId, 'tree.md'].sort());
+    expect(await readdir(path.join(treeDir(), trashId, 'topic', 'attachments'))).toEqual([
+      'memory-layout.svg',
+    ]);
+    expect((await getAttachment('node=topic-2/topic&name=memory-layout.svg')).statusCode).toBe(404);
   });
 
   it('409 for node management while an attachment save is pending', async () => {

@@ -14,6 +14,8 @@ interface SidebarProps {
   tree: TreeDetail | null;
   currentTreeId: string | null;
   onSelectTree: (id: string) => void;
+  /** The tree folder was renamed by a title change in the settings. */
+  onTreeRenamed: (from: string, to: string) => void;
 }
 
 export function Sidebar({
@@ -24,6 +26,7 @@ export function Sidebar({
   tree,
   currentTreeId,
   onSelectTree,
+  onTreeRenamed,
 }: SidebarProps) {
   const { t } = useTranslation('sidebar');
   return (
@@ -75,7 +78,7 @@ export function Sidebar({
         />
         {tree && (
           <>
-            <TreeSettings key={tree.id} tree={tree} />
+            <TreeSettings key={tree.id} tree={tree} onRenamed={onTreeRenamed} />
             <SourcesPanel treeId={tree.id} />
           </>
         )}

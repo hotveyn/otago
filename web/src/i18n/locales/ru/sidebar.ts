@@ -17,6 +17,7 @@ export const sidebar = {
     title: 'Настройки',
     instructionsSet: 'инструкции заданы',
     fieldTitle: 'Название',
+    titleHint: 'При переименовании дерева переименовывается и его папка.',
     fieldInstructions: 'Инструкции',
     instructionsPlaceholder: 'Отвечай по-русски. Я знаю C++, сравнивай с ним, где это полезно.',
     instructionsHint: 'Добавляются к системному промпту при каждом вопросе.',
