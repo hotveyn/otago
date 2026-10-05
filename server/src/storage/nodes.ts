@@ -4,20 +4,18 @@ import { InvalidInputError, NotFoundError } from '../errors.js';
 import { type AttachmentInfo, listAttachments } from './attachments.js';
 import { type NodeFile, parseNodeFile, serializeNodeFile } from './format.js';
 import { claimUniqueName, createDirAtomic, exists, isErrno } from './fs-utils.js';
+import { isNodeName, nameKey, toNodeName } from './node-names.js';
 import {
   deletedNameFor,
+  isReservedName,
   isSameOrDescendant,
-  isSlug,
   joinId,
   NODE_FILE,
   nodeDirOf,
   nodeIdSegments,
   parentIdOf,
   parseTrashId,
-  RESERVED_NODE_NAMES,
-  RESERVED_ROOT_NAMES,
   reservedNamesFor,
-  toKebabCase,
   trashDirOf,
 } from './paths.js';
 import { listUserFiles, type UserFileInfo } from './user-files.js';
@@ -44,19 +42,30 @@ export async function readHierarchy(treeDir: string): Promise<HierarchyNode[]> {
 }
 
 async function readChildren(dir: string, parentId: string): Promise<HierarchyNode[]> {
-  const entries = await readdir(dir, { withFileTypes: true });
+  const entries = (await readdir(dir, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => ({ raw: entry.name, name: entry.name.normalize('NFC') }))
+    // Folders already in NFC first (they are what an NFC id resolves to), then by name.
+    .sort(
+      (a, b) =>
+        Number(a.raw !== a.name) - Number(b.raw !== b.name) ||
+        (a.raw < b.raw ? -1 : a.raw > b.raw ? 1 : 0),
+    );
+  const seen = new Set<string>();
   const nodes: HierarchyNode[] = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !isSlug(entry.name)) continue;
-    if (RESERVED_NODE_NAMES.has(entry.name)) continue;
-    if (parentId === '' && RESERVED_ROOT_NAMES.has(entry.name)) continue;
-    const nodeDir = path.join(dir, entry.name);
+  for (const { raw, name } of entries) {
+    if (!isNodeName(name) || isReservedName(parentId, name)) continue;
+    // NFC/NFD twins (or fold twins) on a normalization-sensitive file system: keep the first.
+    const key = nameKey(name);
+    if (seen.has(key)) continue;
+    const nodeDir = path.join(dir, raw);
     const node = await readNodeFileIfExists(nodeDir);
     if (!node) continue;
-    const id = joinId(parentId, entry.name);
+    seen.add(key);
+    const id = joinId(parentId, name);
     nodes.push({
       id,
-      name: entry.name,
+      name,
       created: node.created,
       children: await readChildren(nodeDir, id),
     });
@@ -114,7 +123,7 @@ export async function createNode(
 ): Promise<string> {
   await assertNodeExists(treeDir, parentId);
   const parentDir = nodeDirOf(treeDir, parentId);
-  const base = toKebabCase(desiredName);
+  const base = toNodeName(desiredName);
   const reserved = reservedNamesFor(parentId);
   const content = serializeNodeFile(node);
   const { stagingDir } = options;
@@ -123,15 +132,18 @@ export async function createNode(
   // same name. No-overwrite invariant: `node.md` is always in the source folder (staging dir
   // or `createDirAtomic` temp dir) before the rename, so a rename onto an existing non-empty
   // folder fails (EEXIST/ENOTEMPTY) instead of replacing it. The retry covers other
-  // processes and external writers.
+  // processes, external writers and fold collisions `readdir` cannot see; a failed candidate
+  // is skipped by key, so the next attempt advances to the next suffix.
+  const skip = new Set<string>();
   for (let attempt = 0; attempt < 10; attempt++) {
-    const { name, release } = await claimUniqueName(parentDir, base, reserved);
+    const { name, release } = await claimUniqueName(parentDir, base, reserved, { skip });
     try {
       if (stagingDir) await rename(stagingDir, path.join(parentDir, name));
       else await createDirAtomic(parentDir, name, { [NODE_FILE]: content });
       return joinId(parentId, name);
     } catch (error) {
       if (!isErrno(error, 'EEXIST', 'ENOTEMPTY')) throw error;
+      skip.add(nameKey(name));
     } finally {
       // After a successful rename the name is visible to `readdir`; the claim is not needed.
       release();
@@ -213,14 +225,19 @@ async function renameClaimed(
   reserved: ReadonlySet<string>,
   options: { self?: string } = {},
 ): Promise<string> {
+  const skip = new Set<string>();
   for (let attempt = 0; attempt < 10; attempt++) {
-    const { name, release } = await claimUniqueName(parentDir, base, reserved, options);
+    const { name, release } = await claimUniqueName(parentDir, base, reserved, {
+      ...options,
+      skip,
+    });
     try {
       if (name === options.self) return name;
       await rename(fromDir, path.join(parentDir, name));
       return name;
     } catch (error) {
       if (!isErrno(error, 'EEXIST', 'ENOTEMPTY')) throw error;
+      skip.add(nameKey(name));
     } finally {
       release();
     }
@@ -250,8 +267,9 @@ export function remapSubtree(ids: string[], oldId: string, newId: string): Recor
 }
 
 /**
- * Rename a node folder in place (same parent) to a unique kebab-case name based on
- * `desiredName`. The node's own current name counts as free, so the same slug is a no-op.
+ * Rename a node folder in place (same parent) to a unique node name based on `desiredName`
+ * (`toNodeName`, Unicode). The node's own current name counts as free, so the same name is a
+ * no-op.
  */
 export async function renameNode(
   treeDir: string,
@@ -270,7 +288,7 @@ export async function renameNode(
   const name = await renameClaimed(
     nodeDir,
     parentDir,
-    toKebabCase(trimmed),
+    toNodeName(trimmed),
     reservedNamesFor(parentId),
     { self: current },
   );
@@ -295,7 +313,7 @@ export async function moveNodes(
   for (const [key, name] of Object.entries(names)) {
     if (!ids.includes(key))
       throw new InvalidInputError(`Name given for an unselected node: ${key}`);
-    if (!isSlug(name) || reserved.has(name)) {
+    if (!isNodeName(name) || isReservedName(targetParentId, name)) {
       throw new InvalidInputError(`Invalid node name: ${name}`);
     }
   }

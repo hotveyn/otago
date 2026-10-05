@@ -397,6 +397,7 @@ describe('runUndo', () => {
     expect(outcome.error).toEqual({
       message: 'Nodes are being moved, renamed or deleted. Try again in a moment.',
       dropped: false,
+      cause: expect.any(ApiError),
     });
   });
 
@@ -407,11 +408,12 @@ describe('runUndo', () => {
   ] as const)('drops a stale entry on 404 %s and keeps the rest', async (code, message) => {
     const older = moveEntry([{ currentId: 'x/a', oldParentId: '', oldName: 'a' }], 'm');
     const entries = [older, deleteEntry([{ trashId: 'b.deleted-1', originalId: 'b' }])];
+    const cause = new ApiError(404, 'gone', code);
     const restore = vi.fn(async () => {
-      throw new ApiError(404, 'gone', code);
+      throw cause;
     });
     const outcome = await runUndo(entries, fakeApi({ restore }));
-    expect(outcome).toEqual({ entries: [older], error: { message, dropped: true } });
+    expect(outcome).toEqual({ entries: [older], error: { message, dropped: true, cause } });
   });
 
   it('drops the entry on 400', async () => {
@@ -437,6 +439,16 @@ describe('runUndo', () => {
     const outcome = await runUndo(entries, fakeApi({ restore }));
     expect(outcome.entries).toBe(entries);
     expect(outcome.error?.dropped).toBe(false);
+    // The original error travels along (the blockers dialog reads a 409's details).
+    expect(outcome.error?.cause).toBe(error);
+  });
+});
+
+describe('remapId with Unicode ids', () => {
+  it('respects segment boundaries of Cyrillic names', () => {
+    expect(remapId('основы/правила', { основы: 'база' })).toBe('база/правила');
+    expect(remapId('основы-2/правила', { основы: 'база' })).toBe('основы-2/правила');
+    expect(remapId('основы', { 'основы-2': 'x' })).toBe('основы');
   });
 });
 

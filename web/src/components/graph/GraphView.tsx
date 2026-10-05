@@ -9,12 +9,30 @@ import {
   ReactFlowProvider,
   useReactFlow,
 } from '@xyflow/react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type KeyboardEvent as ReactKeyboardEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
 import { keys } from '../../api/queries';
 import type { TreeDetail } from '../../api/types';
+import { treeBusyDetailsOf } from '../../lib/blockers';
 import { describeError } from '../../lib/chat-errors';
+import { pushNotice } from '../../lib/notices';
+import {
+  useConnectionStatus,
+  usePendingBoxes,
+  usePendingStatuses,
+  useQuestionStore,
+  useTreeBusy,
+  useTreeCounts,
+} from '../../lib/question-store';
+import type { ConnectionStatus, PendingStatusInfo } from '../../lib/questions';
 import { renameTargetOf } from '../../lib/rename';
 import {
   afterDelete,
@@ -30,13 +48,17 @@ import type { AppliedStep } from '../../lib/undo-history';
 import { Button } from '../ui/Button';
 import { ErrorNote } from '../ui/ErrorNote';
 import { BoxNode as BoxNodeComponent } from './BoxNode';
+import { useShowBlockers } from './blockers-context';
 import {
   type BoxNode,
   fromFlowId,
   ghostKey,
   isGhostKey,
+  isPendingFlowId,
   layoutTree,
   loadLabelFonts,
+  PENDING_PREFIX,
+  pendingFlowId,
 } from './layout';
 import { DeleteDialog, MoveDialog, RenameDialog } from './NodeDialogs';
 import { TreeEdge } from './TreeEdge';
@@ -75,22 +97,50 @@ const centerOf = (node: BoxNode): [number, number] => [
   node.position.y + (node.height ?? 0) / 2,
 ];
 
+/** How long the first Esc on a running pending box stays armed. */
+const ESC_ARM_MS = 2_000;
+/** "Reconnecting…" shows only after this long (short blips stay silent). */
+const RECONNECTING_NOTICE_MS = 3_000;
+
+const CANCELLABLE: ReadonlySet<string> = new Set(['sending', 'uploading', 'streaming']);
+
+/** True once the event stream has been reconnecting for a while after having been live. */
+function useReconnecting(status: ConnectionStatus): boolean {
+  const [shown, setShown] = useState(false);
+  const wasLive = useRef(false);
+  useEffect(() => {
+    if (status === 'live') wasLive.current = true;
+    if (status !== 'reconnecting' || !wasLive.current) {
+      setShown(false);
+      return;
+    }
+    const timer = setTimeout(() => setShown(true), RECONNECTING_NOTICE_MS);
+    return () => clearTimeout(timer);
+  }, [status]);
+  return shown;
+}
+
 interface GraphViewProps {
   tree: TreeDetail;
   currentId: string;
-  busy: boolean;
+  /** In-flight questions the panels show: main chat (`q`) and foreground aside (`sideQ`). */
+  focus: { main: string | null; side: string | null };
   onSelectNode: (id: string) => void;
   /** Current node changed because of a delete/move/rename; replaces the history entry. */
   onCurrentChange: (id: string) => void;
-  /** Nodes were moved, renamed or deleted (after the hierarchy cache is updated). */
+  /** Nodes were moved, renamed, deleted or restored (after the hierarchy cache is updated). */
   onNodesChanged?: (change: NodesChange) => void;
+  /** A pending box was clicked (or Enter on it): open its question. */
+  onOpenPending: (key: string) => void;
 }
 
 export type NodesChange =
   | { kind: 'move'; moved: Record<string, string> }
   | { kind: 'delete'; ids: string[] }
   /** `renamed` = full old → new id map (the renamed node and every descendant). */
-  | { kind: 'rename'; renamed: Record<string, string> };
+  | { kind: 'rename'; renamed: Record<string, string> }
+  /** An undone delete: original id → restored id for nodes that came back as `-2`. */
+  | { kind: 'restore'; restored: Record<string, string> };
 
 export function GraphView(props: GraphViewProps) {
   return (
@@ -103,29 +153,63 @@ export function GraphView(props: GraphViewProps) {
 function Graph({
   tree,
   currentId,
-  busy,
+  focus,
   onSelectNode,
   onCurrentChange,
   onNodesChanged,
+  onOpenPending,
 }: GraphViewProps) {
   const { t } = useTranslation(['graph', 'common']);
   const queryClient = useQueryClient();
   const flow = useReactFlow<BoxNode>();
+  const store = useQuestionStore();
+  const showBlockers = useShowBlockers();
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [dialog, setDialog] = useState<'delete' | 'move' | 'rename' | null>(null);
   /** Rename target, frozen when the dialog opens. */
   const [renameId, setRenameId] = useState('');
+  /** Pending box key whose first Esc was pressed. */
+  const [escArmed, setEscArmed] = useState<string | null>(null);
 
-  const fontsVersion = useFontsVersion();
-  // biome-ignore lint/correctness/useExhaustiveDependencies: re-measure once fonts load
-  const layout = useMemo(
-    () => layoutTree(tree.title, tree.nodes, currentId),
-    [tree.title, tree.nodes, currentId, fontsVersion],
-  );
+  // The graph never subscribes to stream text: boxes change on add/remove/remap/label only,
+  // statuses on status changes only.
+  const busy = useTreeBusy(tree.id);
+  const boxes = usePendingBoxes(tree.id);
+  const statuses = usePendingStatuses(tree.id);
+  const runningCount = useTreeCounts()[tree.id]?.running ?? 0;
+  const reconnecting = useReconnecting(useConnectionStatus());
+
   const known = useMemo(
     () => new Set(flatten(tree.nodes).map(({ node }) => node.id)),
     [tree.nodes],
+  );
+  // A saved answer keeps its box until the refetched tree shows its node (no empty frame).
+  const visibleBoxes = useMemo(
+    () => boxes.filter((box) => !(box.nodeId && known.has(box.nodeId))),
+    [boxes, known],
+  );
+  const boxByKey = useMemo(() => new Map(boxes.map((box) => [box.key, box])), [boxes]);
+  /** Key of the pending box the main chat shows: its question, or its send under `currentId`. */
+  const focusKey = useMemo(() => {
+    const box =
+      focus.main !== null
+        ? boxes.find((item) => item.questionId === focus.main)
+        : boxes.find(
+            (item) =>
+              item.outboxId !== null && item.context.kind === 'main' && item.parentId === currentId,
+          );
+    return box?.key ?? null;
+  }, [boxes, focus.main, currentId]);
+  // The focused box stands where the next answer goes: no ghost then.
+  const ghostParent = focus.main !== null || focusKey !== null ? null : currentId;
+
+  const fontsVersion = useFontsVersion();
+  // Relayout only on hierarchy, ghost or box changes; never on a chunk or a status change.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-measure once fonts load
+  const layout = useMemo(
+    () => layoutTree(tree.title, tree.nodes, ghostParent, visibleBoxes),
+    [tree.title, tree.nodes, ghostParent, visibleBoxes, fontsVersion],
   );
 
   // Forget selected ids that no longer exist.
@@ -137,36 +221,84 @@ function Graph({
   }, [known]);
 
   const chain = useMemo(() => new Set(chainIds(currentId)), [currentId]);
+  const tooltipOf = useCallback(
+    (status: PendingStatusInfo | undefined): string => {
+      if (!status) return '';
+      const label =
+        status.status === 'failed'
+          ? t('pending.failed', { message: status.error ?? '' })
+          : t(`pending.${status.status}`);
+      return `${status.tooltip}\n${label} · ${t('pending.hint')}`;
+    },
+    [t],
+  );
   const decorate = useCallback(
     (nodes: BoxNode[]): BoxNode[] =>
       nodes.map((node) => {
         if (node.data.ghost) return node;
+        const key = node.data.pendingKey;
+        if (key !== null) {
+          const status = statuses[key];
+          const box = boxByKey.get(key);
+          const questionId = box?.questionId ?? null;
+          const data = {
+            ...node.data,
+            pendingStatus: status?.status ?? null,
+            focus: key === focusKey,
+            open: questionId !== null && questionId === focus.side,
+            escArmed: escArmed === key,
+            tooltip: tooltipOf(status),
+          };
+          const same =
+            data.pendingStatus === node.data.pendingStatus &&
+            data.focus === node.data.focus &&
+            data.open === node.data.open &&
+            data.escArmed === node.data.escArmed &&
+            data.tooltip === node.data.tooltip;
+          return same ? node : { ...node, data };
+        }
         const id = node.data.nodeId;
         const data = {
           ...node.data,
-          current: id === currentId,
+          // While the main chat shows a question, its box is the focus, not the parent.
+          current: id === currentId && focus.main === null,
           inChain: node.data.isRoot || chain.has(id),
           selected: selection.has(id),
           dropTarget: node.id === dropTarget,
-          busy,
         };
         const same =
           data.current === node.data.current &&
           data.inChain === node.data.inChain &&
           data.selected === node.data.selected &&
-          data.dropTarget === node.data.dropTarget &&
-          data.busy === node.data.busy;
+          data.dropTarget === node.data.dropTarget;
         return same ? node : { ...node, data };
       }),
-    [currentId, chain, selection, dropTarget, busy],
+    [
+      currentId,
+      chain,
+      selection,
+      dropTarget,
+      statuses,
+      boxByKey,
+      focusKey,
+      focus.main,
+      focus.side,
+      escArmed,
+      tooltipOf,
+    ],
   );
 
   const [nodes, setNodes] = useState<BoxNode[]>(() => decorate(layout.nodes));
   const nodesRef = useRef(nodes);
   const decorateRef = useRef(decorate);
+  /** Created node id → flow id of the pending box it replaces. */
+  const doneBoxesRef = useRef(new Map<string, string>());
   useEffect(() => {
     nodesRef.current = nodes;
     decorateRef.current = decorate;
+    doneBoxesRef.current = new Map(
+      boxes.flatMap((box) => (box.nodeId ? [[box.nodeId, pendingFlowId(box.key)] as const] : [])),
+    );
   });
 
   // When nodes are added (e.g. a new answer), glide everything to the new layout and grow the
@@ -186,6 +318,10 @@ function Graph({
       const startOf = (node: BoxNode) => {
         const own = from.get(node.id);
         if (own) return own;
+        // A saved answer takes the place of its pending box.
+        const pendingBox = doneBoxesRef.current.get(node.id);
+        const pendingStart = pendingBox === undefined ? undefined : from.get(pendingBox);
+        if (pendingStart) return pendingStart;
         // A new answer takes the place of the placeholder that stood under its parent.
         const ghost = from.get(ghostKey(parentOf.get(node.id) ?? ''));
         if (ghost && !node.data.ghost) return ghost;
@@ -230,6 +366,13 @@ function Graph({
     () =>
       layout.edges.map((edge) => {
         if (isGhostKey(edge.target)) return { ...edge, className: 'edge-ghost' };
+        if (isPendingFlowId(edge.target)) {
+          const key = edge.target.slice(PENDING_PREFIX.length);
+          if (key === focusKey)
+            return { ...edge, className: 'edge-chain', animated: true, zIndex: 1 };
+          const failed = statuses[key]?.status === 'failed';
+          return { ...edge, className: failed ? 'edge-failed' : 'edge-pending', zIndex: 0 };
+        }
         const inChain = chain.has(fromFlowId(edge.target));
         // Chain edges sit above the grey ones where sibling buses overlap, with marching dashes.
         return {
@@ -239,12 +382,19 @@ function Graph({
           zIndex: inChain ? 1 : 0,
         };
       }),
-    [layout.edges, chain],
+    [layout.edges, chain, statuses, focusKey],
   );
 
   const pane = useRef<HTMLDivElement>(null);
   const boxOf = (id: string) =>
-    layout.nodes.find((node) => !node.data.ghost && node.data.nodeId === id);
+    layout.nodes.find(
+      (node) => !node.data.ghost && node.data.pendingKey === null && node.data.nodeId === id,
+    );
+  /** The focused pending box when the main chat shows a question, else the current node. */
+  const focusBoxOf = () =>
+    (focusKey !== null && focus.main !== null
+      ? layout.nodes.find((node) => node.id === pendingFlowId(focusKey))
+      : undefined) ?? boxOf(currentId);
 
   // On tree switch: fit small trees; for big ones keep a readable zoom around the current node.
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on tree switch
@@ -252,7 +402,7 @@ function Graph({
     const frame = requestAnimationFrame(async () => {
       await flow.fitView({ padding: 0.2, maxZoom: 1.1 });
       if (flow.getZoom() >= READABLE_ZOOM) return;
-      const target = boxOf(currentId) ?? boxOf('');
+      const target = focusBoxOf() ?? boxOf('');
       const height = pane.current?.clientHeight ?? 0;
       if (!target) return;
       const [cx, cy] = centerOf(target);
@@ -262,10 +412,10 @@ function Graph({
     return () => cancelAnimationFrame(frame);
   }, [tree.id]);
 
-  // Pan to the current node when it is off screen (e.g. a freshly created answer).
+  // Pan to the current node (or focused pending box) when it is off screen.
   // biome-ignore lint/correctness/useExhaustiveDependencies: react to the current node only
   useEffect(() => {
-    const target = boxOf(currentId);
+    const target = focusBoxOf();
     const rect = pane.current?.getBoundingClientRect();
     if (!target || !rect) return;
     const { x, y, zoom } = flow.getViewport();
@@ -276,7 +426,7 @@ function Graph({
     if (sx < margin || sy < margin || sx > rect.width - margin || sy > rect.height - margin) {
       void flow.setCenter(cx, cy, { zoom, duration: 300 });
     }
-  }, [currentId, layout]);
+  }, [currentId, focusKey, layout]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange<BoxNode>[]) => setNodes((current) => applyNodeChanges(changes, current)),
@@ -304,8 +454,18 @@ function Graph({
     if (kind === 'move') {
       const next = afterMove(now.currentId, fixups);
       if (next !== now.currentId) now.onCurrentChange(next);
-    }
-    now.onNodesChanged?.({ kind: 'move', moved: fixups });
+      now.onNodesChanged?.({ kind: 'move', moved: fixups });
+    } else now.onNodesChanged?.({ kind: 'restore', restored: fixups });
+  };
+
+  /**
+   * A 409 `tree_busy_streaming`: close the form and open the blockers dialog, which offers the
+   * same action again once nothing blocks it. Other errors stay inline.
+   */
+  const onBusyError = (error: unknown, label: string, run: () => void) => {
+    if (!treeBusyDetailsOf(error)) return;
+    setDialog(null);
+    showBlockers({ tree: tree.id, error, retry: { label, run } });
   };
 
   const remove = useMutation({
@@ -318,6 +478,8 @@ function Graph({
       onNodesChanged?.({ kind: 'delete', ids });
       undo.recordDelete(result.deleted);
     },
+    onError: (error, ids) =>
+      onBusyError(error, t('blockers.retry.delete'), () => remove.mutate(ids)),
   });
 
   const move = useMutation({
@@ -331,7 +493,10 @@ function Graph({
       onNodesChanged?.({ kind: 'move', moved: result.moved });
       undo.recordMove(result.moved);
     },
-    onError: () => animateTo(layout.nodes),
+    onError: (error, variables) => {
+      animateTo(layout.nodes);
+      onBusyError(error, t('blockers.retry.move'), () => move.mutate(variables));
+    },
   });
 
   const rename = useMutation({
@@ -345,18 +510,28 @@ function Graph({
       onNodesChanged?.({ kind: 'rename', renamed: result.renamed });
       undo.remap(result.renamed);
     },
+    onError: (error, variables) =>
+      onBusyError(error, t('blockers.retry.rename'), () => rename.mutate(variables)),
   });
 
   const undo = useTreeUndo({
     treeId: tree.id,
-    streaming: busy,
+    busy,
     blocked: dialog !== null || remove.isPending || move.isPending || rename.isPending,
     onApplied: onUndoApplied,
+    onBusy: (error, retry) =>
+      showBlockers({
+        tree: tree.id,
+        error,
+        retry: { label: t('blockers.retry.undo'), run: retry },
+      }),
   });
-  /** Structural edits are paused while an answer streams or an undo runs. */
+  /** Structural edits are paused while answers run or an undo runs. */
   const frozen = busy || undo.pending;
 
-  const actionError = remove.error ?? move.error ?? rename.error;
+  /** Busy 409s go to the blockers dialog, never inline. */
+  const inline = (error: unknown) => (error && !treeBusyDetailsOf(error) ? error : null);
+  const actionError = inline(remove.error) ?? inline(move.error) ?? inline(rename.error);
   const resetErrors = () => {
     remove.reset();
     move.reset();
@@ -366,7 +541,8 @@ function Graph({
     resetErrors();
     setDialog(kind);
   };
-  const renameTarget = renameTargetOf(selection, currentId);
+  // The focused question is not a node: no implicit rename target while it is shown.
+  const renameTarget = renameTargetOf(selection, focus.main !== null ? '' : currentId);
   const openRename = (target: string) => {
     resetErrors();
     setRenameId(target);
@@ -375,6 +551,11 @@ function Graph({
 
   const onNodeClick: NodeMouseHandler<BoxNode> = (event, node) => {
     if (node.data.ghost) return;
+    if (node.data.pendingKey !== null) {
+      setSelection(new Set());
+      onOpenPending(node.data.pendingKey);
+      return;
+    }
     const id = node.data.nodeId;
     if (event.shiftKey || event.metaKey || event.ctrlKey) {
       if (node.data.isRoot) return;
@@ -402,6 +583,7 @@ function Graph({
         (hit) =>
           hit.id !== node.id &&
           !hit.data.ghost &&
+          hit.data.pendingKey === null &&
           canMoveTo(ids, hit.data.nodeId) &&
           !ids.includes(hit.data.nodeId),
       );
@@ -428,11 +610,48 @@ function Graph({
     return () => window.removeEventListener('keydown', onKey);
   }, [dialog]);
 
+  useEffect(() => {
+    if (escArmed === null) return;
+    const timer = setTimeout(() => setEscArmed(null), ESC_ARM_MS);
+    return () => clearTimeout(timer);
+  }, [escArmed]);
+
+  const cancelPending = (status: PendingStatusInfo) => {
+    if (status.outboxId !== null) store.abortOutbox(status.outboxId);
+    else if (status.questionId !== null)
+      store
+        .cancel(status.questionId)
+        .catch((error: unknown) =>
+          pushNotice({ kind: 'error', message: describeError(error).message }),
+        );
+  };
+
+  /** Keyboard on a focused pending box: Enter opens it, Esc twice cancels a running one. */
+  const onGraphKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const element = event.target instanceof Element ? event.target : null;
+    const id = element?.closest('.react-flow__node')?.getAttribute('data-id');
+    if (!id || !isPendingFlowId(id)) return;
+    const key = id.slice(PENDING_PREFIX.length);
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      onOpenPending(key);
+      return;
+    }
+    if (event.key !== 'Escape') return;
+    const status = statuses[key];
+    if (!status || !CANCELLABLE.has(status.status)) return;
+    if (escArmed === key) {
+      setEscArmed(null);
+      cancelPending(status);
+    } else setEscArmed(key);
+  };
+
   const selected = [...selection];
   const topSelected = topLevelIds(selected);
 
   return (
-    <div className="graph" ref={pane}>
+    // biome-ignore lint/a11y/noStaticElementInteractions: keys of the focused pending box bubble here
+    <div className="graph" ref={pane} onKeyDown={onGraphKeyDown}>
       <div className="graph-toolbar">
         {selection.size > 0 ? (
           <>
@@ -480,7 +699,17 @@ function Graph({
             )}
           </>
         )}
-        {busy && <span className="muted small">{t('busy')}</span>}
+        {busy && (
+          <span className="graph-busy muted small">
+            {t('busyCount', { count: Math.max(1, runningCount) })}
+            <Button size="sm" variant="ghost" onClick={() => showBlockers({ tree: tree.id })}>
+              {t('showBlockers')}
+            </Button>
+          </span>
+        )}
+        {reconnecting && (
+          <span className="graph-reconnecting muted small">{t('reconnecting')}</span>
+        )}
       </div>
       {actionError && dialog === null ? (
         <div className="graph-error">
@@ -529,7 +758,7 @@ function Graph({
         nodes={tree.nodes}
         selection={selected}
         pending={remove.isPending}
-        error={remove.error}
+        error={inline(remove.error)}
         onConfirm={() => remove.mutate(selected)}
         onClose={() => setDialog(null)}
       />
@@ -539,7 +768,7 @@ function Graph({
         nodes={tree.nodes}
         selection={selected}
         pending={move.isPending}
-        error={move.error}
+        error={inline(move.error)}
         onConfirm={(target) => move.mutate({ ids: selected, target })}
         onClose={() => setDialog(null)}
       />
@@ -547,7 +776,7 @@ function Graph({
         open={dialog === 'rename'}
         currentName={findNode(tree.nodes, renameId)?.name ?? nameOf(renameId)}
         pending={rename.isPending}
-        error={rename.error}
+        error={inline(rename.error)}
         onConfirm={(name) => rename.mutate({ id: renameId, name })}
         onClose={() => setDialog(null)}
       />

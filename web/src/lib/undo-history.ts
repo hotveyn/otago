@@ -378,7 +378,8 @@ export interface AppliedStep {
 
 export interface UndoOutcome {
   entries: HistoryEntry[];
-  error?: { message: string; dropped: boolean };
+  /** `cause` = the original error (e.g. a 409 whose details name the blocking answers). */
+  error?: { message: string; dropped: boolean; cause: unknown };
 }
 
 /** Undo the top entry. Steps run sequentially; `onStep` fires after each successful request. */
@@ -403,7 +404,7 @@ export async function runUndo(
       const verdict = classifyUndoError(error);
       return {
         entries: verdict.drop ? list.slice(0, -1) : list,
-        error: { message: verdict.message, dropped: verdict.drop },
+        error: { message: verdict.message, dropped: verdict.drop, cause: error },
       };
     }
     const map = idMapOf(step, response);

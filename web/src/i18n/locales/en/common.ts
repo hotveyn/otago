@@ -14,8 +14,23 @@ export const common = {
   errors: {
     busyStructural: 'Nodes are being moved, renamed or deleted. Try again in a moment.',
     busyStreaming: 'An answer is still streaming. Try again when it finishes.',
+    busyStreamingCount_one:
+      '{{count}} answer is still running in this tree. Try again when it finishes, or cancel it.',
+    busyStreamingCount_other:
+      '{{count}} answers are still running in this tree. Try again when they finish, or cancel them.',
     nodeMissing: 'The node this side chat branches from no longer exists (moved or deleted).',
-    emptyResponse: 'Empty response',
-    streamEnded: 'Stream ended without an answer',
+    parentMissing: 'The node this message goes under no longer exists (moved or deleted).',
+    questionNotFound: 'This question is no longer available.',
+    questionFinished: 'The answer was already saved.',
+  },
+  notices: {
+    cancelledElsewhere: '“{{title}}” was cancelled in another tab.',
+    dismissedElsewhere: '“{{title}}” was dismissed in another tab.',
+    expired: '“{{title}}” is no longer available.',
+    parentDeleted: '“{{title}}” was removed because its node was deleted.',
+    vanished: '“{{title}}” is no longer running.',
+    serverRestarted_one: 'The server restarted: {{count}} answer in progress was lost.',
+    serverRestarted_other: 'The server restarted: {{count}} answers in progress were lost.',
+    notSent: '“{{title}}” was not sent: {{message}}',
   },
 };

@@ -11,6 +11,6 @@ export function sideThread(chain: ChainNode[], anchor: string): ChainNode[] {
 /** Where the next side message goes. */
 export const sideParent = (side: SideChatState): string => side.head ?? side.anchor;
 
-/** "Open in main chat" needs a created node and no running stream. */
-export const canPromote = (side: SideChatState, streaming: boolean): boolean =>
-  side.head !== null && !streaming;
+/** "Open in main chat" needs a created node and no in-flight question in the panel. */
+export const canPromote = (side: SideChatState): boolean =>
+  side.head !== null && side.question === null;

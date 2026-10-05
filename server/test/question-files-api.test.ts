@@ -7,6 +7,11 @@ import { buildUserPrompt } from '../src/agent/index.js';
 import { EMPTY_TEXT_QUESTION } from '../src/routes/message-input.js';
 import { MAX_MESSAGE_FILE_BYTES, parseNodeFile } from '../src/storage/index.js';
 import {
+  askAndSettle,
+  deferred,
+  eventKinds,
+  expectDone,
+  expectFailed,
   type FakeAgentOptions,
   fakeAgent,
   fb2Book,
@@ -14,29 +19,18 @@ import {
   makeApp,
   multipartBody,
   multipartMessage,
-  parseSse,
   pngBytes,
+  settle,
+  type TestContext,
+  tempEntries,
+  tick,
+  waitFor,
 } from './helpers.js';
 
 const IDLE = { shared: 0, exclusive: false };
-const tick = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function deferred(): { promise: Promise<void>; open: () => void } {
-  let open!: () => void;
-  const promise = new Promise<void>((resolve) => {
-    open = resolve;
-  });
-  return { promise, open };
-}
-
-interface DoneData {
-  nodeId: string;
-  attachments: unknown[];
-  files: Array<{ name: string; size: number; contentType: string; kind: string; text?: string }>;
-}
-
-describe('POST /api/trees/:tree/messages with files', () => {
-  let ctx: Awaited<ReturnType<typeof makeApp>>;
+describe('POST /api/trees/:tree/questions with files', () => {
+  let ctx: TestContext;
   let agent: ReturnType<typeof fakeAgent>;
   afterEach(() => ctx.close());
 
@@ -56,15 +50,13 @@ describe('POST /api/trees/:tree/messages with files', () => {
   ) =>
     ctx.app.inject({
       method: 'POST',
-      url: '/api/trees/rust/messages',
+      url: '/api/trees/rust/questions',
       ...multipartMessage(payload, files, opts),
     });
 
-  const doneOf = (body: string): DoneData => {
-    const done = parseSse(body).find((event) => event.event === 'done');
-    if (!done) throw new Error(`No done event in ${body}`);
-    return done.data as DoneData;
-  };
+  /** Send a multipart question and wait for its outcome. */
+  const ask = async (payload: object, files: MultipartFileSpec[]) =>
+    settle(ctx, await send(payload, files));
 
   const getFile = (node: string, name: string, download = false) =>
     ctx.app.inject({
@@ -72,37 +64,40 @@ describe('POST /api/trees/:tree/messages with files', () => {
       url: `/api/trees/rust/files?node=${encodeURIComponent(node)}&name=${encodeURIComponent(name)}${download ? '&download=1' : ''}`,
     });
 
-  /** Nothing was created, no staging left and the lock is free. */
+  /** Nothing was created or registered, no staging left and the lock is free. */
   async function expectNothingWritten(before = ['tree.md']) {
     expect(await treeEntries()).toEqual(before);
     expect(ctx.locks.status('rust')).toEqual(IDLE);
     expect(agent.calls).toEqual([]);
+    const list = await ctx.app.inject({ method: 'GET', url: '/api/questions' });
+    expect(list.json().questions).toEqual([]);
+    expect(ctx.events.all).toEqual([]);
   }
 
-  it('stores files with the node and reports them in done and chain', async () => {
+  it('stores files with the node and reports them in the 202, done and chain', async () => {
     await setup();
     const res = await send({ parentId: '', text: 'Explain these' }, [
       { name: 'notes.md', content: '# Notes', type: 'text/markdown' },
       { name: '', content: pngBytes(), type: 'image/png' },
       { name: 'notes.md', content: '# Other notes' },
     ]);
-    expect(res.statusCode).toBe(200);
-    expect(res.headers['content-type']).toContain('text/event-stream');
-    const done = doneOf(res.body);
-    expect(done).toEqual({
-      nodeId: 'with-files',
-      attachments: [],
-      files: [
-        { name: 'notes-2.md', size: 13, contentType: 'text/markdown; charset=utf-8', kind: 'text' },
-        { name: 'notes.md', size: 7, contentType: 'text/markdown; charset=utf-8', kind: 'text' },
-        {
-          name: 'pasted-image.png',
-          size: pngBytes().length,
-          contentType: 'image/png',
-          kind: 'image',
-        },
-      ],
-    });
+    expect(res.statusCode).toBe(202);
+    expect(res.headers['content-type']).toContain('application/json');
+    const files = [
+      { name: 'notes-2.md', size: 13, contentType: 'text/markdown; charset=utf-8', kind: 'text' },
+      { name: 'notes.md', size: 7, contentType: 'text/markdown; charset=utf-8', kind: 'text' },
+      {
+        name: 'pasted-image.png',
+        size: pngBytes().length,
+        contentType: 'image/png',
+        kind: 'image',
+      },
+    ];
+    // Staged metadata with the final names, sorted by name, before the answer.
+    expect(res.json().question.files).toEqual(files);
+    const done = expectDone((await settle(ctx, res)).question);
+    expect(done).toMatchObject({ nodeId: 'with-files', attachments: [], files });
+
     const nodeDir = path.join(treeDir(), 'with-files');
     expect((await readdir(nodeDir)).sort()).toEqual(['files', 'node.md']);
     expect(await readFile(path.join(nodeDir, 'files', 'notes-2.md'), 'utf8')).toBe('# Other notes');
@@ -129,16 +124,20 @@ describe('POST /api/trees/:tree/messages with files', () => {
         }
       },
     });
-    const res = await send({ parentId: '', text: 'Q' }, [
-      { name: 'shot.png', content: pngBytes() },
-      { name: 'Book.fb2', content: fb2Book() },
-    ]);
-    expect(res.statusCode).toBe(200);
+    expectDone(
+      (
+        await ask({ parentId: '', text: 'Q' }, [
+          { name: 'shot.png', content: pngBytes() },
+          { name: 'Book.fb2', content: fb2Book() },
+        ])
+      ).question,
+    );
     expect(seen).toHaveLength(2);
     for (const file of seen) expect(file).toMatch(/^\.tmp-answer-[^/]+\/files\//);
     expect(seen[1]).toMatch(/files\/Book\.fb2\.md$/);
     const input = agent.calls[0];
     expect(input?.question).toBe('Q');
+    expect(seen[0]?.startsWith(`${path.basename(input?.stagingDir ?? '')}/`)).toBe(true);
     const prompt = buildUserPrompt(input?.chain ?? [], input?.question ?? '', input?.files);
     expect(prompt).toContain(`${seen[0]} (image, ${pngBytes().length} bytes)`);
     expect(prompt).toContain(`${seen[1]} (text extracted from Book.fb2,`);
@@ -149,16 +148,20 @@ describe('POST /api/trees/:tree/messages with files', () => {
     const res = await send({ parentId: '', text: 'Q' }, [{ name: 'a.txt', content: 'a' }], {
       payloadType: 'application/json',
     });
-    expect(res.statusCode).toBe(200);
-    expect(doneOf(res.body).files.map((f) => f.name)).toEqual(['a.txt']);
+    expect(res.statusCode).toBe(202);
+    const done = expectDone((await settle(ctx, res)).question);
+    expect(done.files.map((f) => f.name)).toEqual(['a.txt']);
   });
 
   it('extracts e-books; the companion is servable', async () => {
     await setup();
-    const res = await send({ parentId: '', text: 'Read the book' }, [
-      { name: 'tiny.fb2', content: fb2Book() },
-    ]);
-    const done = doneOf(res.body);
+    const done = expectDone(
+      (
+        await ask({ parentId: '', text: 'Read the book' }, [
+          { name: 'tiny.fb2', content: fb2Book() },
+        ])
+      ).question,
+    );
     expect(done.files).toEqual([
       {
         name: 'tiny.fb2',
@@ -174,31 +177,34 @@ describe('POST /api/trees/:tree/messages with files', () => {
     expect(companion.body).toContain('<!-- Text extracted by Otago from files/tiny.fb2 -->');
   });
 
-  it('empty text with files: stores "", asks with the default question, names from files', async () => {
+  it('empty text with files: stores "", asks the default question, titled and named from files', async () => {
     await setup();
     const res = await send({ parentId: '', text: '   ' }, [
       { name: 'shot.png', content: pngBytes() },
     ]);
-    expect(res.statusCode).toBe(200);
-    const { nodeId } = doneOf(res.body);
+    expect(res.statusCode).toBe(202);
+    expect(res.json().question).toMatchObject({ text: '', title: 'shot.png' });
+    const { nodeId } = expectDone((await settle(ctx, res)).question);
     const node = parseNodeFile(await readFile(path.join(treeDir(), nodeId, 'node.md'), 'utf8'));
     expect(node.user).toBe('');
     expect(agent.calls[0]?.question).toBe(EMPTY_TEXT_QUESTION);
     expect(agent.nameCalls[0]?.question).toBe('Attached files: shot.png');
 
-    const noText = await send({ parentId: '' }, [{ name: 'a.txt', content: 'a' }]);
-    expect(noText.statusCode).toBe(200);
+    const noText = await send({ parentId: '' }, [
+      { name: 'b.txt', content: 'b' },
+      { name: 'a.txt', content: 'a' },
+    ]);
+    expect(noText.statusCode).toBe(202);
+    expect(noText.json().question.title).toBe('a.txt, b.txt');
+    await settle(ctx, noText);
   });
 
   it('falls back to a name from the file names when naming fails', async () => {
-    await setup();
-    agent.name = async () => {
-      throw new Error('down');
-    };
-    const res = await send({ parentId: '', text: '' }, [
+    await setup({ nameError: 'down' });
+    const { question } = await ask({ parentId: '', text: '' }, [
       { name: 'diagram.png', content: pngBytes() },
     ]);
-    expect(doneOf(res.body).nodeId).toBe('attached-files-diagram-png');
+    expect(expectDone(question).nodeId).toBe('attached-files-diagram-png');
   });
 
   it('empty text and no files → 400 empty_message', async () => {
@@ -211,10 +217,10 @@ describe('POST /api/trees/:tree/messages with files', () => {
     });
     await expectNothingWritten();
     // Text-only multipart works like JSON.
-    expect((await send({ parentId: '', text: 'Q' }, [])).statusCode).toBe(200);
+    expectDone((await ask({ parentId: '', text: 'Q' }, [])).question);
   });
 
-  describe('rejections leave nothing behind', () => {
+  describe('rejections register nothing and leave nothing behind', () => {
     const cases: Array<{
       title: string;
       payload?: object | string | null;
@@ -316,7 +322,8 @@ describe('POST /api/trees/:tree/messages with files', () => {
         payload: { parentId: 'missing', text: 'Q' },
         files: [{ name: 'a.txt', content: 'x' }],
         status: 404,
-        error: 'Node not found: missing',
+        code: 'parent_not_found',
+        error: 'Parent node not found: missing',
       },
       {
         title: 'unknown model',
@@ -324,6 +331,13 @@ describe('POST /api/trees/:tree/messages with files', () => {
         files: [{ name: 'a.txt', content: 'x' }],
         status: 400,
         error: /^Unknown model "gpt-4"/,
+      },
+      {
+        title: 'side anchor outside the parent chain',
+        payload: { parentId: '', text: 'Q', context: { kind: 'side', anchor: 'x' } },
+        files: [{ name: 'a.txt', content: 'x' }],
+        status: 400,
+        error: /^Invalid context/,
       },
     ];
 
@@ -374,7 +388,7 @@ describe('POST /api/trees/:tree/messages with files', () => {
       await setup();
       const res = await ctx.app.inject({
         method: 'POST',
-        url: '/api/trees/rust/messages',
+        url: '/api/trees/rust/questions',
         payload: { parentId: '', text: '   ' },
       });
       expect(res.statusCode).toBe(400);
@@ -382,63 +396,162 @@ describe('POST /api/trees/:tree/messages with files', () => {
     });
   });
 
-  it('agent failure → error event, no node and no files', async () => {
-    await setup({ chunks: ['partial', 'more'], failAfter: 1 });
-    const res = await send({ parentId: '', text: 'Q' }, [{ name: 'a.txt', content: 'x' }]);
-    expect(parseSse(res.body).at(-1)).toEqual({
-      event: 'error',
-      data: { message: 'Agent exploded' },
+  describe('failed questions keep their files outside trees/', () => {
+    it('agent failure holds the files; nothing remains under trees/', async () => {
+      await setup({ chunks: ['partial', 'more'], failAfter: 1 });
+      const { question, events } = await ask({ parentId: '', text: 'Q' }, [
+        { name: 'a.txt', content: 'x' },
+      ]);
+      const failed = expectFailed(question);
+      expect(failed).toMatchObject({
+        error: { message: 'Agent exploded', code: 'agent_error' },
+        files: [{ name: 'a.txt', size: 1 }],
+      });
+      expect(eventKinds(events).at(-1)).toBe('question:failed');
+      expect(await treeEntries()).toEqual(['tree.md']);
+      expect(await tempEntries(treeDir())).toEqual([]);
+      expect(await readFile(path.join(ctx.heldDir, failed.id, 'files', 'a.txt'), 'utf8')).toBe('x');
+      expect(ctx.locks.status('rust')).toEqual(IDLE);
     });
-    expect(await treeEntries()).toEqual(['tree.md']);
-    expect(ctx.locks.status('rust')).toEqual(IDLE);
+
+    it('retry moves the held files back and commits them with the node', async () => {
+      let attempts = 0;
+      const seen: string[][] = [];
+      await setup({
+        onAsk: async (input) => {
+          attempts++;
+          for (const file of input.files) await access(path.join(input.treeDir, file.path));
+          seen.push(input.files.map((file) => file.path));
+          if (attempts === 1) throw new Error('Agent exploded');
+        },
+      });
+      const { question } = await ask({ parentId: '', text: 'Q' }, [
+        { name: 'b.md', content: '# b' },
+        { name: 'a.txt', content: 'a' },
+      ]);
+      const failed = expectFailed(question);
+
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/questions/${failed.id}/retry`,
+      });
+      expect(res.statusCode).toBe(202);
+      expect(res.json().question.files.map((f: { name: string }) => f.name)).toEqual([
+        'a.txt',
+        'b.md',
+      ]);
+      const done = expectDone(await ctx.questions.settled(failed.id));
+      expect(done.files.map((f) => f.name)).toEqual(['a.txt', 'b.md']);
+      expect(seen).toHaveLength(2);
+      for (const paths of seen) {
+        expect(paths.map((p) => path.basename(p)).sort()).toEqual(['a.txt', 'b.md']);
+      }
+      // A new staging folder for the retry.
+      expect(seen[1]?.[0]?.split('/')[0]).not.toBe(seen[0]?.[0]?.split('/')[0]);
+      expect(await readFile(path.join(treeDir(), done.nodeId, 'files', 'a.txt'), 'utf8')).toBe('a');
+      expect(await readdir(ctx.heldDir)).toEqual([]);
+      expect(await tempEntries(treeDir())).toEqual([]);
+    });
+
+    it('dismiss removes the held files', async () => {
+      await setup({ failAfter: 0 });
+      const failed = expectFailed(
+        (await ask({ parentId: '', text: 'Q' }, [{ name: 'a.txt', content: 'x' }])).question,
+      );
+      expect(await readdir(ctx.heldDir)).toEqual([failed.id]);
+      const res = await ctx.app.inject({ method: 'DELETE', url: `/api/questions/${failed.id}` });
+      expect(res.statusCode).toBe(204);
+      await waitFor(async () => (await readdir(ctx.heldDir)).length === 0);
+    });
+
+    it('a failed question whose parent was moved retries under the new parent', async () => {
+      let fail = false;
+      const names = ['parent', 'other', 'child'];
+      await setup({
+        onAsk: () => {
+          if (fail) {
+            fail = false;
+            throw new Error('Agent exploded');
+          }
+        },
+      });
+      agent.name = async () => names.shift() ?? 'extra';
+      await askAndSettle(ctx, { parentId: '', text: 'parent' });
+      await askAndSettle(ctx, { parentId: '', text: 'other' });
+      fail = true;
+      const failed = expectFailed(
+        (
+          await ask(
+            { parentId: 'parent', text: 'Q', context: { kind: 'side', anchor: 'parent' } },
+            [{ name: 'a.txt', content: 'x' }],
+          )
+        ).question,
+      );
+      const moved = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/trees/rust/nodes/move',
+        payload: { ids: ['parent'], targetParentId: 'other' },
+      });
+      expect(moved.statusCode).toBe(200);
+      expect(ctx.questions.get(failed.id)).toMatchObject({
+        status: 'failed',
+        parentId: 'other/parent',
+        context: { kind: 'side', anchor: 'other/parent' },
+      });
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/questions/${failed.id}/retry`,
+      });
+      expect(res.statusCode).toBe(202);
+      const done = expectDone(await ctx.questions.settled(failed.id));
+      expect(done.nodeId).toBe('other/parent/child');
+      expect(
+        await readFile(path.join(treeDir(), 'other', 'parent', 'child', 'files', 'a.txt'), 'utf8'),
+      ).toBe('x');
+    });
   });
 
-  it('move while a multipart answer streams → 409 tree_busy_streaming', async () => {
+  it('move while a multipart answer streams → 409 tree_busy_streaming with details', async () => {
     const gate = deferred();
     await setup({ gate: () => gate.promise });
-    const stream = send({ parentId: '', text: 'Q' }, [{ name: 'a.txt', content: 'x' }]);
-    await tick();
+    const res = await send({ parentId: '', text: 'Q' }, [{ name: 'a.txt', content: 'x' }]);
+    expect(res.statusCode).toBe(202);
     const move = await ctx.app.inject({
       method: 'POST',
       url: '/api/trees/rust/nodes/move',
       payload: { ids: ['x'], targetParentId: '' },
     });
     expect(move.statusCode).toBe(409);
-    expect(move.json().code).toBe('tree_busy_streaming');
+    expect(move.json()).toMatchObject({
+      code: 'tree_busy_streaming',
+      details: { questions: [{ id: res.json().question.id, title: 'Q' }], preparing: 0 },
+    });
     gate.open();
-    expect(doneOf((await stream).body).files.map((f) => f.name)).toEqual(['a.txt']);
+    const done = expectDone((await settle(ctx, res)).question);
+    expect(done.files.map((f) => f.name)).toEqual(['a.txt']);
     expect(ctx.locks.status('rust')).toEqual(IDLE);
   });
 
-  it('client disconnect during the stream → nothing written', async () => {
+  it('DELETE during the stream → nothing written, no files held', async () => {
     const started = deferred();
     await setup({
       chunks: ['a', 'b', 'c'],
       gate: async () => {
         started.open();
-        await tick(50);
+        await new Promise(() => {});
       },
     });
-    await ctx.app.listen({ host: '127.0.0.1', port: 0 });
-    const { port } = ctx.app.server.address() as AddressInfo;
-    const form = new FormData();
-    form.append('payload', JSON.stringify({ parentId: '', text: 'Q' }));
-    form.append('files', new Blob(['hello']), 'a.txt');
-    const controller = new AbortController();
-    const res = await fetch(`http://127.0.0.1:${port}/api/trees/rust/messages`, {
-      method: 'POST',
-      body: form,
-      signal: controller.signal,
-    });
-    expect(res.status).toBe(200);
+    const res = await send({ parentId: '', text: 'Q' }, [{ name: 'a.txt', content: 'hello' }]);
     await started.promise;
-    controller.abort();
-    await tick(300);
+    const { id } = res.json().question;
+    const cancel = await ctx.app.inject({ method: 'DELETE', url: `/api/questions/${id}` });
+    expect(cancel.statusCode).toBe(204);
     expect(await treeEntries()).toEqual(['tree.md']);
+    expect(await readdir(ctx.heldDir)).toEqual([]);
     expect(ctx.locks.status('rust')).toEqual(IDLE);
   });
 
-  it('client disconnect during the upload → nothing written, agent never runs', async () => {
+  it('client disconnect during the upload → nothing written, agent never runs, no entry', async () => {
     await setup();
     await ctx.app.listen({ host: '127.0.0.1', port: 0 });
     const { port } = ctx.app.server.address() as AddressInfo;
@@ -447,7 +560,7 @@ describe('POST /api/trees/:tree/messages with files', () => {
       host: '127.0.0.1',
       port,
       method: 'POST',
-      path: '/api/trees/rust/messages',
+      path: '/api/trees/rust/questions',
       headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
     });
     req.on('error', () => undefined);
@@ -458,10 +571,21 @@ describe('POST /api/trees/:tree/messages with files', () => {
     req.write(Buffer.alloc(64 * 1024, 0x61));
     await tick(100);
     expect(ctx.locks.status('rust').shared).toBe(1);
+    // The upload holds the lock but has no question yet: it counts as preparing.
+    const move = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/trees/rust/nodes/move',
+      payload: { ids: ['x'], targetParentId: '' },
+    });
+    expect(move.json()).toMatchObject({
+      code: 'tree_busy_streaming',
+      details: { questions: [], preparing: 1 },
+    });
     const staging = (await treeEntries()).filter((name) => name.startsWith('.tmp-answer-'));
     expect(staging).toHaveLength(1);
     req.destroy();
-    await tick(200);
+    await waitFor(() => ctx.locks.status('rust').shared === 0);
+    await tick(50);
     await expectNothingWritten();
   });
 
@@ -469,22 +593,13 @@ describe('POST /api/trees/:tree/messages with files', () => {
     await setup();
     let names = ['parent', 'child', 'sibling'];
     agent.name = async () => names.shift() ?? 'extra';
-    await ctx.app.inject({
-      method: 'POST',
-      url: '/api/trees/rust/messages',
-      payload: { parentId: '', text: 'root question' },
-    });
-    const withFiles = await send({ parentId: 'parent', text: 'Q with file' }, [
+    await askAndSettle(ctx, { parentId: '', text: 'root question' });
+    const withFiles = await ask({ parentId: 'parent', text: 'Q with file' }, [
       { name: 'notes.md', content: '# n' },
     ]);
-    expect(doneOf(withFiles.body).nodeId).toBe('parent/child');
+    expect(expectDone(withFiles.question).nodeId).toBe('parent/child');
 
-    const followUp = await ctx.app.inject({
-      method: 'POST',
-      url: '/api/trees/rust/messages',
-      payload: { parentId: 'parent/child', text: 'follow up' },
-    });
-    expect(followUp.statusCode).toBe(200);
+    await askAndSettle(ctx, { parentId: 'parent/child', text: 'follow up' });
     const followInput = agent.calls.at(-1);
     const followPrompt = buildUserPrompt(followInput?.chain ?? [], 'follow up', followInput?.files);
     expect(followPrompt).toContain(
@@ -493,11 +608,7 @@ describe('POST /api/trees/:tree/messages with files', () => {
     expect(followInput?.files).toEqual([]);
 
     names = ['sibling'];
-    await ctx.app.inject({
-      method: 'POST',
-      url: '/api/trees/rust/messages',
-      payload: { parentId: 'parent', text: 'sibling' },
-    });
+    await askAndSettle(ctx, { parentId: 'parent', text: 'sibling' });
     const siblingInput = agent.calls.at(-1);
     const siblingPrompt = buildUserPrompt(
       siblingInput?.chain ?? [],
@@ -541,11 +652,11 @@ describe('POST /api/trees/:tree/messages with files', () => {
           },
         ],
       });
-      const res = await send({ parentId: '', text: 'Q' }, [
+      const { question } = await ask({ parentId: '', text: 'Q' }, [
         { name: 'same.txt', content: 'user bytes' },
         { name: 'pic.png', content: pngBytes() },
       ]);
-      return doneOf(res.body).nodeId;
+      return expectDone(question).nodeId;
     }
 
     it('serves a user file inline or as a download with safe headers', async () => {

@@ -32,7 +32,7 @@ const staging = await createAnswerStaging({
   onEvent: (event) => console.error(`\n[attachment] ${JSON.stringify(event)}`),
 });
 
-const name = agent.name({ question, model: config.models.naming, signal: controller.signal });
+let answer = '';
 for await (const event of agent.ask({
   treeDir,
   instructions: tree.instructions,
@@ -42,10 +42,21 @@ for await (const event of agent.ask({
   model: config.models.answer,
   signal: controller.signal,
   staging,
+  stagingDir: staging.dir,
 })) {
   if (event.type === 'chunk') process.stdout.write(event.text);
-  else console.log(`\n\n--- done (${event.model}), ${event.text.length} chars`);
+  else {
+    answer = event.text;
+    console.log(`\n\n--- done (${event.model}), ${event.text.length} chars`);
+  }
 }
-console.log(`--- node name: ${await name}`);
+// Like the server: the name is chosen after the answer, from the question and the answer.
+const name = await agent.name({
+  question,
+  answer,
+  model: config.models.naming,
+  signal: controller.signal,
+});
+console.log(`--- node name: ${name}`);
 console.log(`--- attachments: ${JSON.stringify(await staging.list())}`);
 await staging.discard();

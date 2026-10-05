@@ -7,6 +7,7 @@ import { canMoveTo, countWithDescendants, flatten, parentIdOf, topLevelIds } fro
 import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
 import { ErrorNote } from '../ui/ErrorNote';
+import { IdPath } from '../ui/IdPath';
 
 interface DeleteDialogProps {
   open: boolean;
@@ -62,7 +63,7 @@ export function DeleteDialog({
       <ul className="id-list">
         {top.map((id) => (
           <li key={id}>
-            <code>{id}</code>
+            <IdPath id={id} />
           </li>
         ))}
       </ul>
@@ -144,6 +145,7 @@ export function MoveDialog({
             <li key={option.id || '__root__'}>
               <button
                 type="button"
+                dir="auto"
                 className={classes}
                 style={{ paddingLeft: 8 + option.depth * 13 }}
                 disabled={!valid}

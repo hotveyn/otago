@@ -1,8 +1,12 @@
 /**
  * Mirrors .claude/features/rich-answers/contracts and
  * .claude/features/chat-file-attachments/contracts and
- * .claude/features/rename-trees-nodes/contracts (server owns the shape).
+ * .claude/features/rename-trees-nodes/contracts and
+ * .claude/features/parallel-questions/contracts (server owns the shape).
  * Hand-maintained: there is no codegen in this repo.
+ *
+ * Node ids (`HierarchyNode.id`, `ChainNode.id`, `parentId`, …) are `/`-joined folder names.
+ * Segments may contain Unicode letters, marks and digits; the server always sends them in NFC.
  */
 
 export interface TreeMeta {
@@ -84,24 +88,176 @@ export interface UserFileInfo {
   text?: string;
 }
 
-/** `done` SSE event payload. Attachment and file URLs are fetchable only after it arrives. */
-export interface MessageDone {
-  nodeId: string;
-  attachments: AttachmentInfo[];
-  /** The new node's user files, exactly as `GET /chain` returns them (`[]` when none). */
-  files: UserFileInfo[];
+// ---------------------------------------------------------------------------
+// In-flight questions. Mirrors .claude/features/parallel-questions/contracts/questions.ts,
+// questions-api.ts, question-events.ts and errors.ts.
+// ---------------------------------------------------------------------------
+
+/** Server-generated UUID. Never changes, also across retries. */
+export type QuestionId = string;
+
+/** `streaming` → `naming` → `done`; any attempt may end `failed`. Cancelled = removed. */
+export type QuestionStatus = 'streaming' | 'naming' | 'done' | 'failed';
+
+/** Holds the tree's shared lock and blocks structural ops (409). */
+export type RunningQuestionStatus = Extract<QuestionStatus, 'streaming' | 'naming'>;
+
+/** Which chat the question belongs to (pure data echoed back by the server). */
+export type QuestionContext = { kind: 'main' } | { kind: 'side'; anchor: string };
+
+export type QuestionFailureCode = 'agent_error' | 'timeout' | 'internal';
+
+export interface QuestionError {
+  /** Human-readable, safe to show. */
+  message: string;
+  code: QuestionFailureCode;
 }
 
+interface QuestionBase {
+  id: QuestionId;
+  /** Current tree id (rewritten after a tree rename). */
+  tree: string;
+  /** Current parent node id (remapped after moves/renames). */
+  parentId: string;
+  context: QuestionContext;
+  /** User text as stored in `node.md` (`""` for a files-only message). */
+  text: string;
+  /** Server display title: first line, ≤ 80 graphemes + `…`; file names for files-only. */
+  title: string;
+  /** User files with their final stored names, sorted by name (`[]` when none). */
+  files: UserFileInfo[];
+  model: string;
+  namingModel: string;
+  /** 1-based; incremented by every retry. */
+  attempt: number;
+  createdAt: string;
+  /** Last status/meta change (not bumped by chunks or attachment events). */
+  updatedAt: string;
+}
+
+export interface RunningQuestion extends QuestionBase {
+  status: RunningQuestionStatus;
+}
+
+export interface DoneQuestion extends QuestionBase {
+  status: 'done';
+  /** The created node. */
+  nodeId: string;
+  /** Committed agent attachments of the node (no `origin`). */
+  attachments: AttachmentInfo[];
+}
+
+export interface FailedQuestion extends QuestionBase {
+  status: 'failed';
+  error: QuestionError;
+}
+
+/** Full meta of a question: every 202 and every `question` event carries the whole object. */
+export type QuestionInfo = RunningQuestion | DoneQuestion | FailedQuestion;
+
+/** Live state of the current attempt (`attempt === question.attempt`). */
+export interface QuestionLive {
+  attempt: number;
+  /** Every chunk of this attempt so far (UTF-16 code units; chunk offsets continue here). */
+  answer: string;
+  /** Latest attachment event per `key`, in order of the key's first appearance. */
+  attachments: AttachmentEvent[];
+}
+
+/** Question + live state (`snapshot` entries). `live` is `null` for `done`. */
+export type QuestionDetail = QuestionInfo & { live: QuestionLive | null };
+
 /**
- * `payload` field of a multipart `POST /messages`. `text` may be empty when files are attached.
- * Mirrors .claude/features/chat-file-attachments/contracts/messages.ts.
+ * `POST /trees/:tree/questions`: the JSON body (then `text` is required) or the multipart
+ * `payload` field (then `text` may be empty when files are attached).
  */
-export interface MessagePayload {
+export interface StartQuestionPayload {
   parentId: string;
   text?: string;
   model?: string;
   namingModel?: string;
-  // urls?: string[] — reserved by the contract
+  /** Default `{ kind: 'main' }`. */
+  context?: QuestionContext;
+}
+
+/** 202 of `POST /trees/:tree/questions`. */
+export interface StartQuestionResponse {
+  question: QuestionInfo;
+}
+
+/** 202 of `POST /questions/:id/retry`. */
+export interface RetryQuestionResponse {
+  question: QuestionInfo;
+}
+
+/** `event: snapshot`: always first on every connection; authoritative. */
+export interface SnapshotEventData {
+  /** Random id per server process; a new value means every question was lost. */
+  instance: string;
+  questions: QuestionDetail[];
+}
+
+/** `event: question`: added, status change, retry or remap. */
+export interface QuestionEventData {
+  question: QuestionInfo;
+}
+
+/** `event: chunk`: `offset` = length of this attempt's answer before `text`. */
+export interface ChunkEventData {
+  id: QuestionId;
+  tree: string;
+  attempt: number;
+  offset: number;
+  text: string;
+}
+
+/** `event: attachment`: agent attachment progress of `attempt`. */
+export interface AttachmentEventData {
+  id: QuestionId;
+  tree: string;
+  attempt: number;
+  event: AttachmentEvent;
+}
+
+export type QuestionRemovedReason = 'cancelled' | 'dismissed' | 'expired' | 'evicted' | 'deleted';
+
+/** `event: removed`: the last event of a question id. */
+export interface RemovedEventData {
+  id: QuestionId;
+  tree: string;
+  reason: QuestionRemovedReason;
+  /** Present when the removed entry was `done`. */
+  nodeId?: string;
+}
+
+export type QuestionStreamEvent =
+  | { event: 'snapshot'; data: SnapshotEventData }
+  | { event: 'question'; data: QuestionEventData }
+  | { event: 'chunk'; data: ChunkEventData }
+  | { event: 'attachment'; data: AttachmentEventData }
+  | { event: 'removed'; data: RemovedEventData };
+
+/** One question that holds the tree's shared lock. */
+export interface BlockingQuestion {
+  id: QuestionId;
+  tree: string;
+  parentId: string;
+  context: QuestionContext;
+  title: string;
+  status: RunningQuestionStatus;
+}
+
+/** `details` of every 409 `tree_busy_streaming`. */
+export interface TreeBusyDetails {
+  /** Running questions of the tree, sorted by `createdAt`. */
+  questions: BlockingQuestion[];
+  /** Shared-lock holders without a running question (uploads, retries being prepared). */
+  preparing: number;
+}
+
+/** `details` of 409 `question_finished`. */
+export interface QuestionFinishedDetails {
+  nodeId: string;
 }
 
 export interface SourceInfo {
@@ -186,12 +342,24 @@ export type MessageUploadErrorCode =
   | 'unreadable_file'
   | 'file_too_large';
 
+/** Codes of the question routes. Mirrors .claude/features/parallel-questions/contracts/errors.ts. */
+export type QuestionErrorCode =
+  /** 404: unknown id, or already removed. */
+  | 'question_not_found'
+  /** 409 on DELETE: the question produced a node (`details: QuestionFinishedDetails`). */
+  | 'question_finished'
+  /** 409 on retry: the question is running, done, or already being retried. */
+  | 'question_not_failed';
+
 /** JSON body of every non-2xx `/api/*` response. */
 export interface ErrorBody {
   /** Human-readable, safe to show. Upload errors name the original file name. */
   error: string;
-  /** 409 lock conflicts, 404 reasons and message-upload rejections. */
-  code?: ConflictCode | MessageUploadErrorCode | NotFoundCode;
-  /** Present only on 400 schema validation errors. */
+  /** 409 lock conflicts, 404 reasons, message-upload rejections and question errors. */
+  code?: ConflictCode | MessageUploadErrorCode | NotFoundCode | QuestionErrorCode;
+  /**
+   * 400 `Invalid input` (schema issues), 409 `tree_busy_streaming` (`TreeBusyDetails`),
+   * 409 `question_finished` (`QuestionFinishedDetails`).
+   */
   details?: unknown;
 }

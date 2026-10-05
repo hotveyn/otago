@@ -3,7 +3,7 @@ import path from 'node:path';
 import { InvalidInputError, NotFoundError } from '../errors.js';
 import { parseTreeFile, serializeTreeFile, type TreeFile } from './format.js';
 import { claimUniqueName, createDirAtomic, exists, isErrno, writeFileAtomic } from './fs-utils.js';
-import { isSlug, TREE_FILE, toKebabCase, treeDirOf } from './paths.js';
+import { isTreeId, TREE_FILE, toTreeId, treeDirOf } from './paths.js';
 
 export interface TreeMeta extends TreeFile {
   id: string;
@@ -14,7 +14,7 @@ export async function listTrees(treesDir: string): Promise<TreeMeta[]> {
   const entries = await readdir(treesDir, { withFileTypes: true });
   const trees: TreeMeta[] = [];
   for (const entry of entries) {
-    if (!entry.isDirectory() || !isSlug(entry.name)) continue;
+    if (!entry.isDirectory() || !isTreeId(entry.name)) continue;
     const tree = await readTreeFile(path.join(treesDir, entry.name)).catch(() => null);
     if (tree) trees.push({ id: entry.name, ...tree });
   }
@@ -40,7 +40,7 @@ export async function createTree(
     instructions: (input.instructions ?? '').trim(),
   };
   // Claimed in-process, so a concurrent create or rename never picks the same id.
-  const { name: id, release } = await claimUniqueName(treesDir, toKebabCase(title, 'tree'));
+  const { name: id, release } = await claimUniqueName(treesDir, toTreeId(title, 'tree'));
   try {
     await createDirAtomic(treesDir, id, { [TREE_FILE]: serializeTreeFile(tree) });
   } finally {
@@ -64,7 +64,7 @@ export interface UpdateTreeOptions {
 
 /**
  * Update title and/or instructions. A title change also renames the tree folder to match
- * (`toKebabCase(title, 'tree')`, unique among trees, own name counts as free). If writing
+ * (`toTreeId(title, 'tree')`, unique among trees, own name counts as free). If writing
  * `tree.md` fails after the folder rename, the folder is renamed back.
  */
 export async function updateTree(
@@ -87,7 +87,7 @@ export async function updateTree(
     await writeFileAtomic(path.join(dir, TREE_FILE), content);
     return { id: treeId, ...next, previous };
   }
-  const base = toKebabCase(next.title, 'tree');
+  const base = toTreeId(next.title, 'tree');
   for (let attempt = 0; attempt < 10; attempt++) {
     const { name: newId, release } = await claimUniqueName(treesDir, base, undefined, {
       self: treeId,

@@ -1,7 +1,14 @@
+import path from 'node:path';
 import { type Options, query } from '@anthropic-ai/claude-agent-sdk';
 import { createAttachmentMcpServer, SAVE_ATTACHMENT_TOOL_ID } from './attachment-tool.js';
-import { buildSystemPrompt, buildUserPrompt, NAMING_PROMPT, sanitizeNodeName } from './prompt.js';
-import { TRASH_DENY_RULE, trashGuardMatcher } from './trash-guard.js';
+import {
+  buildNamingPrompt,
+  buildSystemPrompt,
+  buildUserPrompt,
+  NAMING_SYSTEM_PROMPT,
+  sanitizeNodeName,
+} from './prompt.js';
+import { pathGuardMatcher, TRASH_DENY_RULE } from './trash-guard.js';
 import type { Agent, AgentEvent, AskInput, NameInput } from './types.js';
 
 export const ALLOWED_TOOLS = ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch'];
@@ -18,7 +25,7 @@ const baseOptions: Options = {
 };
 
 export function buildAskOptions(
-  input: Pick<AskInput, 'treeDir' | 'instructions' | 'model' | 'staging'>,
+  input: Pick<AskInput, 'treeDir' | 'instructions' | 'model' | 'staging' | 'stagingDir'>,
   abortController: AbortController,
 ): Options {
   return {
@@ -30,9 +37,10 @@ export function buildAskOptions(
     tools: ALLOWED_TOOLS,
     allowedTools: [...ALLOWED_TOOLS, SAVE_ATTACHMENT_TOOL_ID],
     disallowedTools: DENIED_TOOLS,
-    // Soft-deleted nodes (`*.deleted-*` folders) stay hidden from the agent.
+    // Soft-deleted nodes (`*.deleted-*` folders) stay hidden from the agent, and so do the
+    // staging folders of other answers in progress (its own stays readable).
     settings: { permissions: { deny: [TRASH_DENY_RULE] } },
-    hooks: { PreToolUse: [trashGuardMatcher()] },
+    hooks: { PreToolUse: [pathGuardMatcher(path.basename(input.stagingDir))] },
     includePartialMessages: true,
     abortController,
   };
@@ -83,14 +91,14 @@ export function createClaudeAgent(): Agent {
       yield { type: 'done', text: text.trim(), model: input.model };
     },
 
-    async name({ question, model, signal }: NameInput): Promise<string> {
+    async name({ question, answer, model, signal }: NameInput): Promise<string> {
       const abortController = linkedAbortController(signal);
       const run = query({
-        prompt: `${NAMING_PROMPT}\n\nQuestion:\n${question.slice(0, 2000)}`,
+        prompt: buildNamingPrompt({ question, answer }),
         options: {
           ...baseOptions,
           model,
-          systemPrompt: 'You produce short kebab-case folder names.',
+          systemPrompt: NAMING_SYSTEM_PROMPT,
           tools: [],
           maxTurns: 1,
           abortController,

@@ -1,6 +1,8 @@
 export interface SseEvent {
   event: string;
   data: string;
+  /** The block's `id:` field, when present (ignored when it contains NUL, per WHATWG). */
+  id?: string;
 }
 
 /** Incremental parser for `text/event-stream`; feed it decoded text as it arrives. */
@@ -15,6 +17,7 @@ export function createSseParser() {
       buffer = buffer.slice(boundary + 2);
       boundary = buffer.indexOf('\n\n');
       let event = 'message';
+      let id: string | undefined;
       const data: string[] = [];
       for (const line of block.split('\n')) {
         if (line.startsWith(':')) continue;
@@ -23,14 +26,28 @@ export function createSseParser() {
         const value = colon === -1 ? '' : line.slice(colon + 1).replace(/^ /, '');
         if (field === 'event') event = value;
         else if (field === 'data') data.push(value);
+        else if (field === 'id' && !value.includes('\u0000')) id = value;
       }
-      if (data.length > 0) events.push({ event, data: data.join('\n') });
+      if (data.length > 0)
+        events.push(
+          id === undefined
+            ? { event, data: data.join('\n') }
+            : { event, data: data.join('\n'), id },
+        );
     }
     return events;
   };
 }
 
-export async function* readSse(body: ReadableStream<Uint8Array>): AsyncGenerator<SseEvent> {
+export interface ReadSseOptions {
+  /** Called after every read that delivered bytes (comments such as `: ping` included). */
+  onBytes?: () => void;
+}
+
+export async function* readSse(
+  body: ReadableStream<Uint8Array>,
+  options: ReadSseOptions = {},
+): AsyncGenerator<SseEvent> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   const parse = createSseParser();
@@ -38,6 +55,7 @@ export async function* readSse(body: ReadableStream<Uint8Array>): AsyncGenerator
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
+      if (value.byteLength > 0) options.onBytes?.();
       yield* parse(decoder.decode(value, { stream: true }));
     }
     yield* parse(decoder.decode());

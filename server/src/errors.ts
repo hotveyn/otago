@@ -3,7 +3,12 @@ export class AppError extends Error {
     readonly statusCode: number,
     message: string,
     /** Optional machine-readable code sent as `code` in the JSON error body. */
-    readonly code?: ConflictCode | UploadErrorCode | NotFoundCode | (string & {}),
+    readonly code?:
+      | ConflictCode
+      | QuestionConflictCode
+      | UploadErrorCode
+      | NotFoundCode
+      | (string & {}),
     /** Optional extra data sent as `details` in the JSON error body. */
     readonly details?: unknown,
   ) {
@@ -17,7 +22,8 @@ export type NotFoundCode =
   | 'node_not_found'
   | 'parent_not_found'
   | 'trash_not_found'
-  | 'tree_not_found';
+  | 'tree_not_found'
+  | 'question_not_found';
 
 export class NotFoundError extends AppError {
   constructor(message: string, code?: NotFoundCode) {
@@ -34,9 +40,27 @@ export class InvalidInputError extends AppError {
 /** Machine-readable reason of a 409 tree-lock conflict. */
 export type ConflictCode = 'tree_busy_streaming' | 'tree_busy_structural';
 
+/** Machine-readable reason of a 409 on a question route. */
+export type QuestionConflictCode = 'question_finished' | 'question_not_failed';
+
 export class ConflictError extends AppError {
-  constructor(message: string, code?: ConflictCode) {
-    super(409, message, code);
+  constructor(message: string, code?: ConflictCode | QuestionConflictCode, details?: unknown) {
+    super(409, message, code, details);
+  }
+}
+
+/**
+ * 409 of the tree lock. `holders` are the shared-lock holder ids at throw time; the central
+ * error handler turns them into `details` (`TreeBusyDetails`) for `tree_busy_streaming`.
+ */
+export class TreeBusyError extends ConflictError {
+  constructor(
+    message: string,
+    code: ConflictCode,
+    readonly treeId: string,
+    readonly holders: readonly string[],
+  ) {
+    super(message, code);
   }
 }
 

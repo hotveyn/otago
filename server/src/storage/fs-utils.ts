@@ -1,5 +1,6 @@
 import { mkdtemp, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { nameKey } from './node-names.js';
 import { TEMP_PREFIX } from './paths.js';
 
 export async function exists(target: string): Promise<boolean> {
@@ -20,11 +21,15 @@ export function isErrno(error: unknown, ...codes: string[]): boolean {
   );
 }
 
-/** First free name among `base`, `base-2`, `base-3`, … not in any of `taken`. */
+/**
+ * First free name among `base`, `base-2`, `base-3`, … whose `nameKey` is in none of `taken`
+ * (sets of keys), so names that fold together on case-insensitive file systems collide.
+ */
 function pickName(base: string, ...taken: ReadonlySet<string>[]): string {
   for (let n = 1; ; n++) {
     const candidate = n === 1 ? base : `${base}-${n}`;
-    if (!taken.some((set) => set.has(candidate))) return candidate;
+    const key = nameKey(candidate);
+    if (!taken.some((set) => set.has(key))) return candidate;
   }
 }
 
@@ -34,25 +39,40 @@ export interface UniqueNameOptions {
    * when reserved or claimed by another caller).
    */
   self?: string;
+  /**
+   * Keys (`nameKey`) of candidates that already failed with `EEXIST`/`ENOTEMPTY` in this call,
+   * so a retry advances to the next suffix.
+   */
+  skip?: ReadonlySet<string>;
 }
 
+/** `nameKey`s of the entries of `dir` (`self` counts as free). */
 async function takenNames(dir: string, self?: string): Promise<Set<string>> {
-  const taken = new Set(await readdir(dir).catch(() => [] as string[]));
-  if (self !== undefined) taken.delete(self);
+  const taken = new Set((await readdir(dir).catch(() => [] as string[])).map(nameKey));
+  if (self !== undefined) taken.delete(nameKey(self));
   return taken;
 }
 
-/** First free name among `base`, `base-2`, `base-3`, … in `dir`. */
+function keysOf(names: ReadonlySet<string>): Set<string> {
+  return new Set([...names].map(nameKey));
+}
+
+/** First free name among `base`, `base-2`, `base-3`, … in `dir` (compared by `nameKey`). */
 export async function uniqueName(
   dir: string,
   base: string,
   reserved: ReadonlySet<string> = new Set(),
   options: UniqueNameOptions = {},
 ): Promise<string> {
-  return pickName(base, await takenNames(dir, options.self), reserved);
+  return pickName(
+    base,
+    await takenNames(dir, options.self),
+    keysOf(reserved),
+    options.skip ?? new Set(),
+  );
 }
 
-/** Names handed out by `claimUniqueName` and not yet released, keyed by resolved dir. */
+/** Keys (`nameKey`) handed out by `claimUniqueName` and not yet released, by resolved dir. */
 const claims = new Map<string, Set<string>>();
 
 export interface NameClaim {
@@ -79,8 +99,9 @@ export async function claimUniqueName(
     claimed = new Set();
     claims.set(key, claimed);
   }
-  const name = pickName(base, taken, reserved, claimed);
-  claimed.add(name);
+  const name = pickName(base, taken, keysOf(reserved), claimed, options.skip ?? new Set());
+  const claimedKey = nameKey(name);
+  claimed.add(claimedKey);
   let released = false;
   return {
     name,
@@ -89,7 +110,7 @@ export async function claimUniqueName(
       released = true;
       const current = claims.get(key);
       if (!current) return;
-      current.delete(name);
+      current.delete(claimedKey);
       if (current.size === 0) claims.delete(key);
     },
   };

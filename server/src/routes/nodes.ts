@@ -9,11 +9,15 @@ import {
   renameNode,
   restoreNodes,
 } from '../storage/index.js';
-import { nodeId, treeParams } from './schemas.js';
+import { desiredNodeName, nodeId, trashId, treeParams } from './schemas.js';
 
 const ids = z.array(nodeId).min(1).max(1000);
 
-export const nodeRoutes: FastifyPluginAsyncZod<RouteDeps> = async (app, { treesDir, locks }) => {
+export const nodeRoutes: FastifyPluginAsyncZod<RouteDeps> = async (
+  app,
+  { treesDir, locks, questions },
+) => {
+  // Retained (failed/done) questions follow structural changes inside the exclusive section.
   app.post(
     '/trees/:tree/nodes/delete',
     { schema: { params: treeParams, body: z.object({ ids }) } },
@@ -22,6 +26,7 @@ export const nodeRoutes: FastifyPluginAsyncZod<RouteDeps> = async (app, { treesD
       const dir = await existingTreeDir(treesDir, tree);
       return locks.withExclusive(tree, async () => {
         const deleted = await deleteNodes(dir, request.body.ids);
+        questions.dropUnder(tree, Object.keys(deleted));
         return { deleted, nodes: await readHierarchy(dir) };
       });
     },
@@ -35,7 +40,7 @@ export const nodeRoutes: FastifyPluginAsyncZod<RouteDeps> = async (app, { treesD
         body: z.object({
           ids,
           targetParentId: nodeId,
-          names: z.record(nodeId, z.string().max(200)).optional(),
+          names: z.record(nodeId, desiredNodeName).optional(),
         }),
       },
     },
@@ -45,6 +50,7 @@ export const nodeRoutes: FastifyPluginAsyncZod<RouteDeps> = async (app, { treesD
       const dir = await existingTreeDir(treesDir, tree);
       return locks.withExclusive(tree, async () => {
         const moved = await moveNodes(dir, ids, targetParentId, { names });
+        questions.remap(tree, moved);
         return { moved, nodes: await readHierarchy(dir) };
       });
     },
@@ -55,7 +61,7 @@ export const nodeRoutes: FastifyPluginAsyncZod<RouteDeps> = async (app, { treesD
     {
       schema: {
         params: treeParams,
-        body: z.object({ trashIds: z.array(z.string().max(1000)).min(1).max(1000) }),
+        body: z.object({ trashIds: z.array(trashId).min(1).max(1000) }),
       },
     },
     async (request) => {
@@ -82,6 +88,7 @@ export const nodeRoutes: FastifyPluginAsyncZod<RouteDeps> = async (app, { treesD
       const dir = await existingTreeDir(treesDir, tree);
       return locks.withExclusive(tree, async () => {
         const result = await renameNode(dir, id, name);
+        if (result.id !== id) questions.remap(tree, { [id]: result.id });
         return { ...result, nodes: await readHierarchy(dir) };
       });
     },

@@ -70,6 +70,14 @@ describe('tree helpers', () => {
     expect(afterMove('a/bb', { 'a/b': 'b' })).toBe('a/bb');
   });
 
+  it('handles Cyrillic ids on segment boundaries', () => {
+    expect(chainIds('основы/правила')).toEqual(['основы', 'основы/правила']);
+    expect(afterMove('основы/правила', { основы: 'x/основы' })).toBe('x/основы/правила');
+    expect(afterMove('основы-2/правила', { основы: 'x/основы' })).toBe('основы-2/правила');
+    expect(afterDelete('основы/правила', ['основы'])).toBe('');
+    expect(afterDelete('основы-2/правила', ['основы'])).toBe('основы-2/правила');
+  });
+
   it('validates move targets', () => {
     expect(canMoveTo(['a/b'], 'e')).toBe(true);
     expect(canMoveTo(['a/b'], '')).toBe(true);

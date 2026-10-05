@@ -1,14 +1,21 @@
 import { Graph, layout } from '@dagrejs/dagre';
 import type { Node } from '@xyflow/react';
 import type { HierarchyNode } from '../../api/types';
+import type { PendingBox, PendingStatus } from '../../lib/questions';
 import type { TreeEdgeType } from './TreeEdge';
 
 export const ROOT_KEY = '__root__';
 const GHOST_PREFIX = '__ghost__:';
+/** `_` and `:` are outside node-name characters, so this never collides with a node id. */
+export const PENDING_PREFIX = '__q__:';
 
 /** Flow id of the placeholder for the next child of `parentFlowId`. */
 export const ghostKey = (parentFlowId: string) => `${GHOST_PREFIX}${parentFlowId}`;
 export const isGhostKey = (id: string) => id.startsWith(GHOST_PREFIX);
+
+/** Flow id of a pending (in-flight) box by its stable key. */
+export const pendingFlowId = (key: string) => `${PENDING_PREFIX}${key}`;
+export const isPendingFlowId = (id: string) => id.startsWith(PENDING_PREFIX);
 
 export const toFlowId = (id: string) => (id === '' ? ROOT_KEY : id);
 export const fromFlowId = (id: string) => (id === ROOT_KEY ? '' : id);
@@ -22,11 +29,22 @@ export interface BoxData extends Record<string, unknown> {
   inChain: boolean;
   selected: boolean;
   dropTarget: boolean;
-  busy: boolean;
   /** Placeholder for where the next answer under the current node will appear. */
   ghost: boolean;
   /** Distance from the root; staggers the entrance animation. */
   depth: number;
+  /** Key of an in-flight question box (`null` for real nodes). */
+  pendingKey: string | null;
+  /** Status decoration of a pending box. */
+  pendingStatus: PendingStatus | null;
+  /** The main chat shows this pending box. */
+  focus: boolean;
+  /** The foreground aside shows this pending box. */
+  open: boolean;
+  /** First Esc pressed: the next one cancels. */
+  escArmed: boolean;
+  /** Tooltip of a pending box (question + status). */
+  tooltip: string;
 }
 
 export type BoxNode = Node<BoxData, 'box'>;
@@ -63,26 +81,36 @@ function textWidth(label: string, isRoot: boolean): number {
   return context.measureText(label).width;
 }
 
-/** Box size that fits the whole label; long labels wrap onto up to three lines. */
-function sizeOf(label: string, isRoot: boolean): { width: number; height: number } {
+/** Box size that fits the whole label; long labels wrap onto up to `maxLines` lines. */
+function sizeOf(
+  label: string,
+  isRoot: boolean,
+  maxLines = MAX_LINES,
+): { width: number; height: number } {
   // A little slack for sub-pixel rounding and the border.
   const text = Math.ceil(textWidth(label, isRoot)) + 4;
   const minWidth = isRoot ? 88 : 64;
   const inner = MAX_WIDTH - PAD_X;
-  const lines = Math.min(MAX_LINES, Math.max(1, Math.ceil(text / inner)));
-  const width = lines === 1 ? Math.max(minWidth, text + PAD_X) : MAX_WIDTH;
+  const lines = Math.min(maxLines, Math.max(1, Math.ceil(text / inner)));
+  const width = lines === 1 ? Math.min(MAX_WIDTH, Math.max(minWidth, text + PAD_X)) : MAX_WIDTH;
   return { width, height: lines * LINE_HEIGHT + PAD_Y };
 }
 
+const byCreated = (a: PendingBox, b: PendingBox) =>
+  a.createdAt.localeCompare(b.createdAt) || a.key.localeCompare(b.key);
+
 /**
  * Top-down tree layout. Positions are node top-left corners, as React Flow expects.
- * `ghostParent` (a node id, `''` for the root) gets a placeholder last child: new answers are
- * sorted by `created`, so that is where the next node will appear.
+ * Per parent: real children, then its pending (in-flight) boxes by `createdAt` (one-line
+ * boxes; skipped when the parent is not in the tree), then the ghost. `ghostParent` (a node id,
+ * `''` for the root) gets a placeholder last child: new answers are sorted by `created`, so
+ * that is where the next node will appear.
  */
 export function layoutTree(
   title: string,
   nodes: HierarchyNode[],
   ghostParent: string | null = null,
+  pending: readonly PendingBox[] = [],
 ): { nodes: BoxNode[]; edges: TreeEdgeType[] } {
   const graph = new Graph();
   graph.setGraph({ rankdir: 'TB', nodesep: 20, ranksep: 42, marginx: 16, marginy: 16 });
@@ -95,8 +123,38 @@ export function layoutTree(
     childCount: number;
     depth: number;
     ghost?: boolean;
+    pendingKey?: string;
   }[] = [];
   const edges: TreeEdgeType[] = [];
+
+  const pendingByParent = new Map<string, PendingBox[]>();
+  for (const box of [...pending].sort(byCreated)) {
+    const parentFlowId = toFlowId(box.parentId);
+    const list = pendingByParent.get(parentFlowId);
+    if (list) list.push(box);
+    else pendingByParent.set(parentFlowId, [box]);
+  }
+
+  const addPending = (parentFlowId: string, depth: number) => {
+    for (const box of pendingByParent.get(parentFlowId) ?? []) {
+      const id = pendingFlowId(box.key);
+      boxes.push({
+        id,
+        label: box.label,
+        isRoot: false,
+        childCount: 0,
+        depth,
+        pendingKey: box.key,
+      });
+      edges.push({
+        id: `edge:${id}`,
+        type: 'tree',
+        source: parentFlowId,
+        target: id,
+        data: { depth },
+      });
+    }
+  };
 
   const addGhost = (parentFlowId: string, depth: number) => {
     const id = ghostKey(parentFlowId);
@@ -129,6 +187,7 @@ export function layoutTree(
       });
       visit(node.children, node.id, depth + 1);
     }
+    addPending(parentFlowId, depth);
     if (ghostParent !== null && parentFlowId === toFlowId(ghostParent))
       addGhost(parentFlowId, depth);
   };
@@ -136,7 +195,7 @@ export function layoutTree(
   visit(nodes, ROOT_KEY, 1);
 
   for (const box of boxes) {
-    graph.setNode(box.id, sizeOf(box.label, box.isRoot));
+    graph.setNode(box.id, sizeOf(box.label, box.isRoot, box.pendingKey ? 1 : MAX_LINES));
   }
   for (const edge of edges) graph.setEdge(edge.source, edge.target);
   layout(graph);
@@ -150,10 +209,10 @@ export function layoutTree(
         position: { x: x - width / 2, y: y - height / 2 },
         width,
         height,
-        draggable: !box.isRoot && !box.ghost,
-        selectable: !box.ghost,
+        draggable: !box.isRoot && !box.ghost && !box.pendingKey,
+        selectable: !box.ghost && !box.pendingKey,
         data: {
-          nodeId: box.ghost ? '' : fromFlowId(box.id),
+          nodeId: box.ghost || box.pendingKey ? '' : fromFlowId(box.id),
           label: box.label,
           isRoot: box.isRoot,
           childCount: box.childCount,
@@ -161,9 +220,14 @@ export function layoutTree(
           inChain: false,
           selected: false,
           dropTarget: false,
-          busy: false,
           ghost: box.ghost ?? false,
           depth: box.depth,
+          pendingKey: box.pendingKey ?? null,
+          pendingStatus: null,
+          focus: false,
+          open: false,
+          escArmed: false,
+          tooltip: '',
         },
       };
     }),

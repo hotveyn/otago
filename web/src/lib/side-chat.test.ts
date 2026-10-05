@@ -32,16 +32,16 @@ describe('sideThread', () => {
 
 describe('sideParent', () => {
   it('uses the head, else the anchor', () => {
-    expect(sideParent({ anchor: 'a', head: null })).toBe('a');
-    expect(sideParent({ anchor: 'a', head: 'a/b' })).toBe('a/b');
-    expect(sideParent({ anchor: '', head: null })).toBe('');
+    expect(sideParent({ anchor: 'a', head: null, question: null })).toBe('a');
+    expect(sideParent({ anchor: 'a', head: 'a/b', question: 'q' })).toBe('a/b');
+    expect(sideParent({ anchor: '', head: null, question: null })).toBe('');
   });
 });
 
 describe('canPromote', () => {
-  it('needs a head and no stream', () => {
-    expect(canPromote({ anchor: 'a', head: null }, false)).toBe(false);
-    expect(canPromote({ anchor: 'a', head: 'a/b' }, true)).toBe(false);
-    expect(canPromote({ anchor: 'a', head: 'a/b' }, false)).toBe(true);
+  it('needs a head and no question in flight', () => {
+    expect(canPromote({ anchor: 'a', head: null, question: null })).toBe(false);
+    expect(canPromote({ anchor: 'a', head: 'a/b', question: 'q' })).toBe(false);
+    expect(canPromote({ anchor: 'a', head: 'a/b', question: null })).toBe(true);
   });
 });

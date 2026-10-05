@@ -1,105 +1,123 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, api, attachmentUrl, buildMessageBody, sendMessage, userFileUrl } from './client';
-import type { AttachmentEvent } from './types';
-
-function sseResponse(parts: string[]): Response {
-  const encoder = new TextEncoder();
-  const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (const part of parts) controller.enqueue(encoder.encode(part));
-      controller.close();
-    },
-  });
-  return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
-}
-
-const event = (name: string, data: unknown) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
+import { ApiError, api, attachmentUrl, buildQuestionBody, isApiError, userFileUrl } from './client';
+import type { QuestionInfo } from './types';
 
 function mockFetch(response: Response) {
-  const fetchMock = vi.fn(async () => response);
+  const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => response);
   vi.stubGlobal('fetch', fetchMock);
   return fetchMock;
 }
 
-const input = () => ({
-  treeId: 'tree',
-  parentId: '',
-  text: 'q',
-  signal: new AbortController().signal,
-  onChunk: vi.fn(),
-  onAttachment: vi.fn(),
-});
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
-const svg = { name: 'x.svg', size: 10, contentType: 'image/svg+xml', kind: 'svg' as const };
+const question: QuestionInfo = {
+  id: '11111111-1111-4111-8111-111111111111',
+  tree: 'tree',
+  parentId: 'основы',
+  context: { kind: 'main' },
+  text: 'q',
+  title: 'q',
+  files: [],
+  model: 'm',
+  namingModel: 'n',
+  attempt: 1,
+  status: 'streaming',
+  createdAt: '2026-10-04T00:00:00.000Z',
+  updatedAt: '2026-10-04T00:00:00.000Z',
+};
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('sendMessage', () => {
-  it('dispatches chunk and attachment events and resolves with done', async () => {
-    const saving: AttachmentEvent = {
-      status: 'saving',
-      key: 'k',
-      requestedName: 'x.svg',
-      origin: 'inline',
-    };
-    const ready: AttachmentEvent = {
-      status: 'ready',
-      key: 'k',
-      attachment: { ...svg, origin: 'inline' },
-    };
-    const fetchMock = mockFetch(
-      sseResponse([
-        event('chunk', 'Hel'),
-        event('attachment', saving).slice(0, 10),
-        event('attachment', saving).slice(10),
-        event('chunk', 'lo'),
-        event('attachment', ready),
-        event('done', { nodeId: 'a/b', attachments: [svg] }),
-      ]),
+describe('questions api', () => {
+  it('starts a question with a JSON body and resolves with the 202 question', async () => {
+    const fetchMock = mockFetch(json({ question }, 202));
+    const controller = new AbortController();
+    const result = await api.startQuestion(
+      'my tree',
+      { parentId: 'основы', text: 'q', context: { kind: 'side', anchor: '' } },
+      controller.signal,
     );
-    const args = input();
-    const done = await sendMessage(args);
-    expect(done).toEqual({ nodeId: 'a/b', attachments: [svg], files: [] });
-    expect(args.onChunk.mock.calls).toEqual([['Hel'], ['lo']]);
-    expect(args.onAttachment.mock.calls).toEqual([[saving], [ready]]);
-    expect(fetchMock).toHaveBeenCalledWith('/api/trees/tree/messages', expect.anything());
-  });
-
-  it('defaults missing done.attachments and done.files to []', async () => {
-    mockFetch(sseResponse([event('done', { nodeId: 'n' })]));
-    await expect(sendMessage(input())).resolves.toEqual({
-      nodeId: 'n',
-      attachments: [],
-      files: [],
+    expect(result).toEqual(question);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/trees/my%20tree/questions');
+    expect(init.method).toBe('POST');
+    expect(init.signal).toBe(controller.signal);
+    expect(new Headers(init.headers).get('content-type')).toBe('application/json');
+    expect(JSON.parse(init.body as string)).toEqual({
+      parentId: 'основы',
+      text: 'q',
+      context: { kind: 'side', anchor: '' },
     });
   });
 
-  it('ignores unknown events', async () => {
-    mockFetch(
-      sseResponse([
-        'event: progress\ndata: not json\n\n',
-        event('done', { nodeId: 'n', attachments: [] }),
-      ]),
-    );
-    await expect(sendMessage(input())).resolves.toEqual({
-      nodeId: 'n',
-      attachments: [],
-      files: [],
+  it('starts a question with files as multipart', async () => {
+    const fetchMock = mockFetch(json({ question }, 202));
+    await api.startQuestion('t', {
+      parentId: 'a',
+      text: '',
+      context: { kind: 'main' },
+      files: [new File(['x'], 'a.pdf')],
     });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.body).toBeInstanceOf(FormData);
+    expect(new Headers(init.headers).has('content-type')).toBe(false);
   });
 
-  it('throws ApiError on an error event', async () => {
-    mockFetch(sseResponse([event('chunk', 'x'), event('error', { message: 'boom' })]));
-    const promise = sendMessage(input());
-    await expect(promise).rejects.toBeInstanceOf(ApiError);
-    await expect(sendMessage(input())).rejects.toThrow();
+  it('cancels with DELETE and resolves on 204', async () => {
+    const fetchMock = mockFetch(new Response(null, { status: 204 }));
+    await expect(api.cancelQuestion('a/b')).resolves.toBeUndefined();
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/questions/a%2Fb');
+    expect(init.method).toBe('DELETE');
+    expect(init.body).toBeUndefined();
   });
 
-  it('throws when the stream ends without done', async () => {
-    mockFetch(sseResponse([event('chunk', 'x')]));
-    await expect(sendMessage(input())).rejects.toThrow('Stream ended without an answer');
+  it('retries with a bodiless POST and resolves with the question', async () => {
+    const retried = { ...question, attempt: 2 };
+    const fetchMock = mockFetch(json({ question: retried }, 202));
+    await expect(api.retryQuestion(question.id)).resolves.toEqual(retried);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`/api/questions/${question.id}/retry`);
+    expect(init.method).toBe('POST');
+    expect(init.body).toBeUndefined();
+  });
+
+  it('maps upload rejections to ApiError', async () => {
+    mockFetch(json({ error: '"big.pdf" is larger than 20 MB', code: 'file_too_large' }, 413));
+    const error = (await api
+      .startQuestion('t', { parentId: '', text: 'q', context: { kind: 'main' } })
+      .catch((e: unknown) => e)) as ApiError;
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.status).toBe(413);
+    expect(error.code).toBe('file_too_large');
+  });
+
+  it('reads question error codes and keeps details for every status', async () => {
+    mockFetch(json({ error: 'done', code: 'question_finished', details: { nodeId: 'a/b' } }, 409));
+    let error = (await api.cancelQuestion(question.id).catch((e: unknown) => e)) as ApiError;
+    expect(error.code).toBe('question_finished');
+    expect(error.details).toEqual({ nodeId: 'a/b' });
+    expect(isApiError(error, 409, 'question_finished')).toBe(true);
+    expect(isApiError(error, 404)).toBe(false);
+
+    mockFetch(json({ error: 'gone', code: 'question_not_found' }, 404));
+    error = (await api.retryQuestion(question.id).catch((e: unknown) => e)) as ApiError;
+    expect(error.code).toBe('question_not_found');
+    expect(error.details).toBeUndefined();
+
+    mockFetch(json({ error: 'busy', code: 'question_not_failed' }, 409));
+    error = (await api.retryQuestion(question.id).catch((e: unknown) => e)) as ApiError;
+    expect(error.code).toBe('question_not_failed');
+  });
+
+  it('keeps busy details of a 409', async () => {
+    const details = { questions: [], preparing: 1 };
+    mockFetch(json({ error: 'busy', code: 'tree_busy_streaming', details }, 409));
+    const error = (await api.deleteNodes('t', ['a']).catch((e: unknown) => e)) as ApiError;
+    expect(error.details).toEqual(details);
   });
 });
 
@@ -139,7 +157,9 @@ describe('error codes', () => {
 
   it('reads a known 409 code', async () => {
     conflict({ error: 'Tree "t" is busy', code: 'tree_busy_structural' });
-    const error = await sendMessage(input()).catch((e: unknown) => e);
+    const error = await api
+      .startQuestion('t', { parentId: '', text: 'q', context: { kind: 'main' } })
+      .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).status).toBe(409);
     expect((error as ApiError).code).toBe('tree_busy_structural');
@@ -282,26 +302,26 @@ describe('node management', () => {
 
 const upload = (name: string, body = 'data', type = '') => new File([body], name, { type });
 
-const pdfInfo = { name: 'a.pdf', size: 4, contentType: 'application/pdf', kind: 'pdf' as const };
-
-describe('buildMessageBody', () => {
-  it('keeps the JSON body without files', () => {
-    const { body, headers } = buildMessageBody({
+describe('buildQuestionBody', () => {
+  it('sends JSON with the context without files', () => {
+    const { body, headers } = buildQuestionBody({
       parentId: 'a',
       text: 'q',
       model: 'm',
       namingModel: undefined,
+      context: { kind: 'main' },
       files: [],
     });
-    expect(body).toBe('{"parentId":"a","text":"q","model":"m"}');
+    expect(body).toBe('{"parentId":"a","text":"q","model":"m","context":{"kind":"main"}}');
     expect(headers).toEqual({ 'content-type': 'application/json' });
   });
 
-  it('builds multipart with the payload first and one part per file', async () => {
-    const { body, headers } = buildMessageBody({
+  it('builds multipart with the payload (incl. context) first and one part per file', async () => {
+    const { body, headers } = buildQuestionBody({
       parentId: 'a/b',
       text: '',
       model: 'm',
+      context: { kind: 'side', anchor: 'a' },
       files: [upload('a.pdf'), upload('', 'png', 'image/png')],
     });
     expect(headers).toEqual({});
@@ -312,51 +332,12 @@ describe('buildMessageBody', () => {
       parentId: 'a/b',
       text: '',
       model: 'm',
+      context: { kind: 'side', anchor: 'a' },
     });
     const files = form.getAll('files') as File[];
     expect(files.map((f) => f.name)).toEqual(['a.pdf', '']);
     expect(files[1]?.type).toBe('image/png');
     await expect(files[0]?.text()).resolves.toBe('data');
-  });
-});
-
-describe('sendMessage with files', () => {
-  it('posts FormData, fires onAccepted before the stream and passes done.files through', async () => {
-    const order: string[] = [];
-    const fetchMock = mockFetch(
-      sseResponse([
-        event('chunk', 'x'),
-        event('done', { nodeId: 'n', attachments: [], files: [pdfInfo] }),
-      ]),
-    );
-    const args = {
-      ...input(),
-      text: '',
-      files: [upload('a.pdf')],
-      onChunk: vi.fn(() => order.push('chunk')),
-      onAccepted: vi.fn(() => order.push('accepted')),
-    };
-    const done = await sendMessage(args);
-    expect(done.files).toEqual([pdfInfo]);
-    expect(args.onAccepted).toHaveBeenCalledTimes(1);
-    expect(order).toEqual(['accepted', 'chunk']);
-    const init = (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1];
-    expect(init.body).toBeInstanceOf(FormData);
-    expect(new Headers(init.headers).has('content-type')).toBe(false);
-  });
-
-  it.each([
-    [400, 'unsupported_file_type', 'Unsupported file type "notes.docx". Allowed: .md'],
-    [413, 'file_too_large', '"big.pdf" is larger than 20 MB'],
-  ])('maps a %i %s rejection to ApiError', async (status, code, message) => {
-    mockFetch(new Response(JSON.stringify({ error: message, code }), { status }));
-    const args = { ...input(), files: [upload('a.pdf')], onAccepted: vi.fn() };
-    const error = (await sendMessage(args).catch((e: unknown) => e)) as ApiError;
-    expect(error).toBeInstanceOf(ApiError);
-    expect(error.status).toBe(status);
-    expect(error.code).toBe(code);
-    expect(error.message).toBe(message);
-    expect(args.onAccepted).not.toHaveBeenCalled();
   });
 });
 

@@ -1,13 +1,14 @@
 /**
  * User files attached to a chat message: constants and pure helpers.
- * Constants mirror .claude/features/chat-file-attachments/contracts/messages.ts and
+ * Constants mirror .claude/features/parallel-questions/contracts/questions-api.ts (body
+ * encodings of `POST /trees/:tree/questions`, unchanged from the old `/messages`) and
  * .claude/features/chat-file-attachments/contracts/user-files.ts (server owns them and is
  * authoritative; these checks only give early feedback).
  * Types only from `api/`: this module must not import `api/client.ts`.
  */
 import { i18n } from '../i18n';
 
-/** Multipart field carrying the JSON `MessagePayload`; must be the first part. */
+/** Multipart field carrying the JSON `StartQuestionPayload`; must be the first part. */
 export const MESSAGE_PAYLOAD_FIELD = 'payload';
 /** Multipart field name of every file part. */
 export const MESSAGE_FILES_FIELD = 'files';

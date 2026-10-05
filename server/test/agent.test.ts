@@ -1,19 +1,28 @@
+import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
 import { describe, expect, it } from 'vitest';
 import {
   ALLOWED_TOOLS,
   type AttachmentStaging,
   buildAskOptions,
+  buildNamingPrompt,
   buildSystemPrompt,
   buildUserPrompt,
   DENIED_TOOLS,
   fallbackNodeName,
+  NAMING_EXCERPT_MAX_CHARS,
+  NAMING_PROMPT,
+  NAMING_SYSTEM_PROMPT,
+  namingExcerpt,
   SAVE_ATTACHMENT_TOOL_ID,
+  STAGING_DENY_REASON,
   SYSTEM_RULES,
   sanitizeNodeName,
   TRASH_DENY_REASON,
   TreeLocks,
   touchesDeletedPath,
+  touchesForeignTemp,
 } from '../src/agent/index.js';
+import { TreeBusyError } from '../src/errors.js';
 
 const noStaging: AttachmentStaging = {
   saveFromBytes: () => Promise.reject(new Error('not used')),
@@ -71,7 +80,13 @@ describe('prompt building', () => {
 
   it('configures the SDK with read-only tools in the tree folder', () => {
     const options = buildAskOptions(
-      { treeDir: '/trees/rust', instructions: 'x', model: 'claude-sonnet-5', staging: noStaging },
+      {
+        treeDir: '/trees/rust',
+        instructions: 'x',
+        model: 'claude-sonnet-5',
+        staging: noStaging,
+        stagingDir: '/trees/rust/.tmp-answer-own',
+      },
       new AbortController(),
     );
     expect(options.cwd).toBe('/trees/rust');
@@ -214,15 +229,100 @@ describe('node name sanitizing', () => {
     ['  "move_semantics."  ', 'move-semantics'],
     ['what is the borrow checker exactly', 'what-is-the-borrow'],
     ['lifetimes\nExplanation: ...', 'lifetimes'],
+    ['\n\n  правила-заимствования\nПояснение', 'правила-заимствования'],
     ['../../etc/passwd', 'etc-passwd'],
-    ['Привет', 'node'],
+    ['Привет', 'привет'],
+    ['Café crème', 'café-crème'],
+    ['Regeln der Ausleihe', 'regeln-der-ausleihe'],
+    ['所有権 と 借用', '所有権-と-借用'],
+    ['👩‍👩‍👧 !!!', 'node'],
     ['', 'node'],
   ])('%j → %s', (raw, expected) => {
     expect(sanitizeNodeName(raw)).toBe(expected);
   });
 
-  it('falls back to the question text', () => {
+  it('uses the given fallback', () => {
+    expect(sanitizeNodeName('!!!', 'fallback')).toBe('fallback');
+  });
+
+  it('falls back to the question text, in its own script', () => {
     expect(fallbackNodeName('What is ownership in Rust?')).toBe('what-is-ownership-in');
+    expect(fallbackNodeName('Что такое владение в Rust?')).toBe('что-такое-владение-в');
+    expect(fallbackNodeName('Attached files: diagram.png')).toBe('attached-files-diagram-png');
+    expect(fallbackNodeName('???')).toBe('node');
+  });
+});
+
+describe('naming prompt', () => {
+  it('keeps prose and drops code, links, footnotes, URLs and HTML', () => {
+    const answer = [
+      'Borrowing lets you **reference** a value [^1].',
+      '',
+      '```rust',
+      'let r = &x;',
+      '```',
+      '',
+      '~~~mermaid',
+      'graph TD; A-->B',
+      '~~~',
+      '',
+      'See [the book](https://doc.rust-lang.org/book/) and ![diagram](attachments/d.svg).',
+      'Use `&mut` for <b>mutable</b> borrows: https://example.com/x <https://example.com/y>',
+      '',
+      '[^1]: sources/the-book-ch4.md:120-134',
+    ].join('\n');
+    expect(namingExcerpt(answer)).toBe(
+      'Borrowing lets you **reference** a value . See the book and . Use for mutable borrows:',
+    );
+  });
+
+  it('drops an unclosed fence to the end and returns "" for a code-only answer', () => {
+    expect(namingExcerpt('Intro\n```js\nconst a = 1;\nno end')).toBe('Intro');
+    expect(namingExcerpt('```python\nprint(1)\n```')).toBe('');
+    expect(namingExcerpt('````md\n```\ninner\n```\n````\nAfter')).toBe('After');
+  });
+
+  it('cuts long prose at a word boundary, grapheme-safe', () => {
+    const words = Array.from({ length: 400 }, (_, i) => `слово${i}`).join(' ');
+    const excerpt = namingExcerpt(words);
+    expect(excerpt.length).toBeLessThanOrEqual(NAMING_EXCERPT_MAX_CHARS);
+    expect(words.startsWith(excerpt)).toBe(true);
+    expect(words[excerpt.length]).toBe(' ');
+    // No spaces at all (e.g. CJK): a grapheme-safe hard cut.
+    const cjk = '借'.repeat(2000);
+    expect(namingExcerpt(cjk)).toBe('借'.repeat(NAMING_EXCERPT_MAX_CHARS));
+    const emoji = '👍'.repeat(1000);
+    const cut = namingExcerpt(emoji);
+    expect(cut.length).toBe(NAMING_EXCERPT_MAX_CHARS);
+    expect([...cut].every((c) => c === '👍')).toBe(true);
+  });
+
+  it('labels its examples by language and wraps question and answer', () => {
+    expect(NAMING_SYSTEM_PROMPT).toBe('You name folders. Output only the name.');
+    for (const phrase of [
+      'English: borrowing-rules',
+      'Russian: правила-заимствования',
+      'German: regeln-der-ausleihe',
+      "language and script of the answer's prose",
+      'Do not transliterate or translate',
+    ]) {
+      expect(NAMING_PROMPT).toContain(phrase);
+    }
+    const prompt = buildNamingPrompt({
+      question: '  Что такое заимствование?  ',
+      answer: 'Это ссылка.',
+    });
+    expect(prompt).toBe(
+      `${NAMING_PROMPT}\n\n<question>\nЧто такое заимствование?\n</question>\n<answer>\nЭто ссылка.\n</answer>`,
+    );
+  });
+
+  it('cuts the question at 500 graphemes and marks a code-only answer', () => {
+    const question = 'é'.normalize('NFD').repeat(600);
+    const prompt = buildNamingPrompt({ question, answer: '```\ncode\n```' });
+    const inside = prompt.split('<question>\n')[1]?.split('\n</question>')[0] ?? '';
+    expect(inside).toBe('é'.normalize('NFD').repeat(500));
+    expect(prompt).toContain('<answer>\n(no prose)\n</answer>');
   });
 });
 
@@ -267,6 +367,52 @@ describe('TreeLocks', () => {
     expect(() => locks.acquireShared('b')()).not.toThrow();
     expect(() => locks.acquireExclusive('b')()).not.toThrow();
     expect(locks.status('b')).toEqual({ shared: 0, exclusive: false });
+  });
+
+  it('records shared holders (anonymous ones get unique ids)', () => {
+    const locks = new TreeLocks();
+    const releaseA = locks.acquireShared('a', 'q1');
+    const releaseB = locks.acquireShared('a', 'q2');
+    const anonymous = locks.acquireShared('a');
+    expect(locks.holders('a')).toEqual(['q1', 'q2', expect.stringMatching(/^anon:\d+$/)]);
+    expect(locks.status('a')).toEqual({ shared: 3, exclusive: false });
+    releaseA();
+    releaseA();
+    expect(locks.holders('a')).toEqual(['q2', expect.stringMatching(/^anon:/)]);
+    anonymous();
+    expect(locks.holders('a')).toEqual(['q2']);
+    // The same holder twice is counted twice and listed once.
+    const again = locks.acquireShared('a', 'q2');
+    expect(locks.holders('a')).toEqual(['q2']);
+    releaseB();
+    expect(locks.holders('a')).toEqual(['q2']);
+    again();
+    expect(locks.holders('a')).toEqual([]);
+    expect(locks.isLocked('a')).toBe(false);
+  });
+
+  it('throws TreeBusyError with the tree id and a snapshot of the holders', () => {
+    const locks = new TreeLocks();
+    const release = locks.acquireShared('a', 'q1');
+    let error: unknown;
+    try {
+      locks.acquireExclusive('a');
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(TreeBusyError);
+    expect(error).toMatchObject({
+      statusCode: 409,
+      code: 'tree_busy_streaming',
+      treeId: 'a',
+      holders: ['q1'],
+    });
+    release();
+    expect((error as TreeBusyError).holders).toEqual(['q1']);
+    const exclusive = locks.acquireExclusive('a');
+    expect(() => locks.acquireShared('a', 'q2')).toThrow(TreeBusyError);
+    expect(locks.holders('a')).toEqual([]);
+    exclusive();
   });
 
   it('has idempotent releases', () => {
@@ -330,7 +476,13 @@ describe('trash guard', () => {
 
   it('buildAskOptions wires the deny rule and the PreToolUse hook', async () => {
     const options = buildAskOptions(
-      { treeDir: '/trees/rust', instructions: '', model: 'm', staging: noStaging },
+      {
+        treeDir: '/trees/rust',
+        instructions: '',
+        model: 'm',
+        staging: noStaging,
+        stagingDir: '/trees/rust/.tmp-answer-own',
+      },
       new AbortController(),
     );
     const settings = options.settings as { permissions?: { deny?: string[] } };
@@ -376,5 +528,74 @@ describe('trash guard', () => {
 
   it('the system prompt tells the agent to ignore deleted folders', () => {
     expect(SYSTEM_RULES).toContain('Ignore folders whose name contains `.deleted-`');
+  });
+});
+
+describe('staging guard (parallel answers)', () => {
+  const own = '.tmp-answer-own';
+  const other = '.tmp-answer-other';
+
+  it('denies other answers’ staging folders in Read/Grep/Glob', () => {
+    expect(touchesForeignTemp('Read', { file_path: `${other}/files/a.png` }, own)).toBe(true);
+    expect(touchesForeignTemp('Read', { file_path: `/trees/rust/x/${other}/a` }, own)).toBe(true);
+    expect(touchesForeignTemp('Grep', { pattern: 'x', path: `x/${other}` }, own)).toBe(true);
+    expect(touchesForeignTemp('Grep', { pattern: 'x', glob: '**/.tmp-*/**' }, own)).toBe(true);
+    expect(touchesForeignTemp('Glob', { pattern: '**/.tmp-answer-*/files/*' }, own)).toBe(true);
+    expect(touchesForeignTemp('Glob', { pattern: '*.md', path: other }, own)).toBe(true);
+  });
+
+  it('allows the own staging folder (relative and absolute) and ignores Grep patterns', () => {
+    expect(touchesForeignTemp('Read', { file_path: `${own}/files/a.png` }, own)).toBe(false);
+    expect(touchesForeignTemp('Read', { file_path: `/trees/rust/x/${own}/files/a` }, own)).toBe(
+      false,
+    );
+    expect(touchesForeignTemp('Grep', { pattern: '.tmp-answer-other', path: 'sources' }, own)).toBe(
+      false,
+    );
+    expect(touchesForeignTemp('Glob', { pattern: '**/*.md' }, own)).toBe(false);
+    expect(touchesForeignTemp('WebFetch', { url: `https://x/${other}` }, own)).toBe(false);
+    expect(touchesForeignTemp('Read', null, own)).toBe(false);
+  });
+
+  it('the PreToolUse hook denies foreign staging, deleted folders first', async () => {
+    const options = buildAskOptions(
+      {
+        treeDir: '/trees/rust',
+        instructions: '',
+        model: 'm',
+        staging: noStaging,
+        stagingDir: `/trees/rust/a/${own}`,
+      },
+      new AbortController(),
+    );
+    const hook = options.hooks?.PreToolUse?.[0]?.hooks[0] as HookCallback;
+    const call = (tool_input: unknown) =>
+      hook(
+        {
+          session_id: 's',
+          transcript_path: 't',
+          cwd: '/trees/rust',
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Read',
+          tool_input,
+          tool_use_id: 'u',
+        },
+        'u',
+        { signal: new AbortController().signal },
+      );
+    const reason = async (tool_input: unknown) =>
+      ((await call(tool_input)) as { hookSpecificOutput?: { permissionDecisionReason?: string } })
+        .hookSpecificOutput?.permissionDecisionReason;
+    expect(await reason({ file_path: `a/${other}/files/x.png` })).toBe(STAGING_DENY_REASON);
+    expect(await reason({ file_path: `a/${own}/files/x.png` })).toBeUndefined();
+    expect(await reason({ file_path: `x.deleted-1759000000000/${other}/n.md` })).toBe(
+      TRASH_DENY_REASON,
+    );
+  });
+
+  it('the system prompt tells the agent to ignore other answers’ folders', () => {
+    expect(SYSTEM_RULES).toContain(
+      'Folders whose name starts with `.tmp-` are other answers being written; ignore them, except the files listed for the current question.',
+    );
   });
 });

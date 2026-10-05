@@ -1,7 +1,7 @@
 import { QueryClient } from '@tanstack/react-query';
 import { describe, expect, it } from 'vitest';
-import { dropTreeCaches, keys, moveTreeCaches } from './queries';
-import type { SourceInfo, TreeDetail, TreeMeta } from './types';
+import { dropTreeCaches, keys, moveTreeCaches, seedDoneChain } from './queries';
+import type { ChainNode, DoneQuestion, SourceInfo, TreeDetail, TreeMeta } from './types';
 
 const meta = (id: string, title = id): TreeMeta => ({
   id,
@@ -67,5 +67,68 @@ describe('dropTreeCaches', () => {
     expect(client.getQueryData(keys.chain('new', 'a'))).toEqual([]);
     expect(client.getQueryData(keys.chain('other', 'a'))).toEqual([]);
     expect(client.getQueryData(keys.trees)).toBeDefined();
+  });
+});
+
+describe('seedDoneChain', () => {
+  const parent: ChainNode = {
+    id: 'основы',
+    name: 'основы',
+    created: 'c',
+    model: 'm',
+    user: 'u',
+    assistant: 'a',
+    attachments: [],
+    files: [],
+  };
+  const done: DoneQuestion = {
+    id: 'q',
+    tree: 't',
+    parentId: 'основы',
+    context: { kind: 'main' },
+    text: 'Вопрос',
+    title: 'Вопрос',
+    files: [{ name: 'a.pdf', size: 1, contentType: 'application/pdf', kind: 'pdf' }],
+    model: 'm2',
+    namingModel: 'n',
+    attempt: 1,
+    status: 'done',
+    nodeId: 'основы/ответ',
+    attachments: [{ name: 'x.svg', size: 1, contentType: 'image/svg+xml', kind: 'svg' }],
+    createdAt: 'c0',
+    updatedAt: 'u1',
+  };
+
+  it('seeds the new node from the cached parent chain and the streamed text', () => {
+    const client = new QueryClient();
+    client.setQueryData(keys.chain('t', 'основы'), [parent]);
+    seedDoneChain(client, done, '  Answer  ');
+    expect(client.getQueryData(keys.chain('t', 'основы/ответ'))).toEqual([
+      parent,
+      {
+        id: 'основы/ответ',
+        name: 'ответ',
+        created: 'u1',
+        model: 'm2',
+        user: 'Вопрос',
+        assistant: 'Answer',
+        attachments: done.attachments,
+        files: done.files,
+      },
+    ]);
+  });
+
+  it('seeds under the root without a cached chain', () => {
+    const client = new QueryClient();
+    seedDoneChain(client, { ...done, parentId: '', nodeId: 'ответ' }, 'A');
+    expect(client.getQueryData<ChainNode[]>(keys.chain('t', 'ответ'))?.map((n) => n.id)).toEqual([
+      'ответ',
+    ]);
+  });
+
+  it('skips when the parent chain is not cached', () => {
+    const client = new QueryClient();
+    seedDoneChain(client, done, 'A');
+    expect(client.getQueryData(keys.chain('t', 'основы/ответ'))).toBeUndefined();
   });
 });

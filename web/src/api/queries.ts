@@ -1,6 +1,14 @@
 import { type QueryClient, useQuery } from '@tanstack/react-query';
+import { nameOf } from '../lib/tree';
 import { api } from './client';
-import type { FileFolder, SourceInfo, TreeDetail, TreeMeta } from './types';
+import type {
+  ChainNode,
+  DoneQuestion,
+  FileFolder,
+  SourceInfo,
+  TreeDetail,
+  TreeMeta,
+} from './types';
 
 export const keys = {
   trees: ['trees'] as const,
@@ -54,6 +62,38 @@ export function moveTreeCaches(queryClient: QueryClient, from: string, updated: 
 export function dropTreeCaches(queryClient: QueryClient, treeId: string): void {
   for (const kind of ['tree', 'chain', 'sources', 'source', 'attachment', 'attachment-blob'])
     queryClient.removeQueries({ queryKey: [kind, treeId] });
+}
+
+/**
+ * A focused question was saved: show its node at once from the cached parent chain and the
+ * streamed text (the server dropped it at commit). The refetch then replaces it with the
+ * stored version. Skipped when the parent chain is not cached.
+ */
+export function seedDoneChain(
+  queryClient: QueryClient,
+  question: DoneQuestion,
+  text: string,
+): void {
+  const { tree, parentId, nodeId } = question;
+  const parent =
+    parentId === '' ? [] : queryClient.getQueryData<ChainNode[]>(keys.chain(tree, parentId));
+  if (!parent) return;
+  queryClient.setQueryData<ChainNode[]>(keys.chain(tree, nodeId), [
+    ...parent,
+    {
+      id: nodeId,
+      name: nameOf(nodeId),
+      // The done meta has no node `created`; the refetch brings the real one.
+      created: question.updatedAt,
+      model: question.model,
+      user: question.text,
+      assistant: text.trim(),
+      // Committed before `done`, so they are fetchable right away.
+      attachments: question.attachments,
+      // The server's stored names, never the local ones.
+      files: question.files,
+    },
+  ]);
 }
 
 export const useTrees = () => useQuery({ queryKey: keys.trees, queryFn: api.listTrees });

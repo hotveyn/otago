@@ -4,8 +4,30 @@ import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { Agent, AttachmentStaging } from '../src/agent/index.js';
+import type { AttachmentEventData, RegistryEvent } from '../src/questions/index.js';
 import { parseNodeFile, serializeNodeFile } from '../src/storage/index.js';
-import { type FakeAgentOptions, fakeAgent, makeApp, parseSse, TEST_MODELS } from './helpers.js';
+import {
+  askAndSettle,
+  eventKinds,
+  expectDone,
+  expectFailed,
+  type FakeAgentOptions,
+  fakeAgent,
+  makeApp,
+  postQuestion,
+  TEST_MODELS,
+  type TestContext,
+  tempEntries,
+} from './helpers.js';
+
+/** `event` payloads of the attachment events (asserting the attempt). */
+function attachmentEvents(events: RegistryEvent[], attempt = 1): AttachmentEventData['event'][] {
+  return events.flatMap((e) => {
+    if (e.event !== 'attachment') return [];
+    expect(e.data.attempt).toBe(attempt);
+    return [e.data.event];
+  });
+}
 
 const svg = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>';
 const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -32,7 +54,7 @@ afterAll(async () => {
 });
 
 describe('answers with attachments', () => {
-  let ctx: Awaited<ReturnType<typeof makeApp>>;
+  let ctx: TestContext;
   afterEach(() => ctx.close());
 
   async function setup(options: FakeAgentOptions | Agent, extra = {}) {
@@ -42,22 +64,10 @@ describe('answers with attachments', () => {
     return agent;
   }
 
-  const post = (payload: object) =>
-    ctx.app.inject({ method: 'POST', url: '/api/trees/rust/messages', payload });
+  const post = (payload: object) => askAndSettle(ctx, payload);
   const treeDir = () => path.join(ctx.treesDir, 'rust');
   const getAttachment = (query: string, method: 'GET' | 'HEAD' = 'GET') =>
     ctx.app.inject({ method, url: `/api/trees/rust/attachments?${query}` });
-
-  /** Every `.tmp-*` entry anywhere in the tree. */
-  async function tempEntries(dir = treeDir()): Promise<string[]> {
-    const entries = await readdir(dir, { withFileTypes: true });
-    const found: string[] = [];
-    for (const entry of entries) {
-      if (entry.name.startsWith('.tmp-')) found.push(entry.name);
-      else if (entry.isDirectory()) found.push(...(await tempEntries(path.join(dir, entry.name))));
-    }
-    return found;
-  }
 
   it('streams attachment events and commits files with the node', async () => {
     await setup({
@@ -68,26 +78,29 @@ describe('answers with attachments', () => {
         { at: 2, save: savePng },
       ],
     });
-    const res = await post({ parentId: '', text: 'Draw memory' });
-    const events = parseSse(res.body);
-    expect(events.map((e) => [e.event, (e.data as { status?: string }).status])).toEqual([
-      ['chunk', undefined],
-      ['attachment', 'saving'],
-      ['attachment', 'ready'],
-      ['chunk', undefined],
-      ['attachment', 'saving'],
-      ['attachment', 'ready'],
-      ['done', undefined],
+    const { question, events } = await post({ parentId: '', text: 'Draw memory' });
+    // Every attachment event precedes `naming` (sealed first).
+    expect(eventKinds(events)).toEqual([
+      'question:streaming',
+      'chunk',
+      'attachment:saving',
+      'attachment:ready',
+      'chunk',
+      'attachment:saving',
+      'attachment:ready',
+      'question:naming',
+      'question:done',
     ]);
-    expect(events[1]?.data).toEqual({
+    const attachments = attachmentEvents(events);
+    expect(attachments[0]).toEqual({
       status: 'saving',
       key: expect.any(String),
       requestedName: 'memory-layout.svg',
       origin: 'inline',
     });
-    expect(events[2]?.data).toEqual({
+    expect(attachments[1]).toEqual({
       status: 'ready',
-      key: (events[1]?.data as { key?: string } | undefined)?.key,
+      key: attachments[0]?.key,
       attachment: {
         name: 'memory-layout.svg',
         size: svg.length,
@@ -96,7 +109,7 @@ describe('answers with attachments', () => {
         origin: 'inline',
       },
     });
-    expect(events.at(-1)?.data).toEqual({
+    expect(expectDone(question)).toMatchObject({
       nodeId: 'layout',
       attachments: [
         { name: 'memory-layout.svg', size: svg.length, contentType: 'image/svg+xml', kind: 'svg' },
@@ -115,7 +128,7 @@ describe('answers with attachments', () => {
       user: 'Draw memory',
       assistant: 'See the chart.',
     });
-    expect(await tempEntries()).toEqual([]);
+    expect(await tempEntries(treeDir())).toEqual([]);
   });
 
   it('suffixes duplicate names within one answer', async () => {
@@ -125,12 +138,11 @@ describe('answers with attachments', () => {
         { at: 1, save: saveSvg },
       ],
     });
-    const done = parseSse((await post({ parentId: '', text: 'Q' })).body).at(-1);
-    expect(
-      (done?.data as { attachments?: Array<{ name: string }> } | undefined)?.attachments?.map(
-        (a) => a.name,
-      ),
-    ).toEqual(['memory-layout-2.svg', 'memory-layout.svg']);
+    const { question } = await post({ parentId: '', text: 'Q' });
+    expect(expectDone(question).attachments.map((a) => a.name)).toEqual([
+      'memory-layout-2.svg',
+      'memory-layout.svg',
+    ]);
   });
 
   it('tool failure → failed event, answer still completes without attachments/', async () => {
@@ -143,8 +155,8 @@ describe('answers with attachments', () => {
         },
       ],
     });
-    const events = parseSse((await post({ parentId: '', text: 'Q' })).body);
-    expect(events.filter((e) => e.event === 'attachment').map((e) => e.data)).toEqual([
+    const { question, events } = await post({ parentId: '', text: 'Q' });
+    expect(attachmentEvents(events)).toEqual([
       { status: 'saving', key: expect.any(String), requestedName: 'x.txt', origin: 'inline' },
       {
         status: 'failed',
@@ -153,22 +165,26 @@ describe('answers with attachments', () => {
         message: 'Empty content',
       },
     ]);
-    expect(events.at(-1)).toEqual({
-      event: 'done',
-      data: { nodeId: 'plain', attachments: [], files: [] },
-    });
+    expect(expectDone(question)).toMatchObject({ nodeId: 'plain', attachments: [], files: [] });
     expect(await readdir(path.join(treeDir(), 'plain'))).toEqual(['node.md']);
   });
 
-  it('agent failure after saving → error, no node, no staging left', async () => {
+  it('agent failure after saving → failed, no node, no staging left', async () => {
     await setup({ chunks: ['a', 'b'], failAfter: 1, attachments: [{ at: 1, save: saveSvg }] });
-    const events = parseSse((await post({ parentId: '', text: 'Q' })).body);
-    expect(events.at(-1)).toEqual({ event: 'error', data: { message: 'Agent exploded' } });
-    expect(events.some((e) => (e.data as { status?: string }).status === 'ready')).toBe(true);
+    const { question, events } = await post({ parentId: '', text: 'Q' });
+    expect(expectFailed(question).error).toEqual({
+      message: 'Agent exploded',
+      code: 'agent_error',
+    });
+    expect(attachmentEvents(events).some((e) => e.status === 'ready')).toBe(true);
+    // The live state of the failed attempt keeps the attachment progress (display only).
+    expect(ctx.questions.detail(question?.id ?? '')?.live?.attachments).toMatchObject([
+      { status: 'ready', attachment: { name: 'memory-layout.svg' } },
+    ]);
     expect(await readdir(treeDir())).toEqual(['tree.md']);
   });
 
-  it('client disconnect → no node and staging removed', async () => {
+  it('cancel → no node and staging removed', async () => {
     let reached!: () => void;
     const saved = new Promise<void>((resolve) => {
       reached = resolve;
@@ -186,20 +202,16 @@ describe('answers with attachments', () => {
       ],
       gate: () => new Promise((resolve) => setTimeout(resolve, 50)),
     });
-    await ctx.app.listen({ host: '127.0.0.1', port: 0 });
-    const { port } = ctx.app.server.address() as AddressInfo;
-    const controller = new AbortController();
-    const res = await fetch(`http://127.0.0.1:${port}/api/trees/rust/messages`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ parentId: '', text: 'Q' }),
-      signal: controller.signal,
-    });
-    expect(res.status).toBe(200);
+    const res = await postQuestion(ctx, { parentId: '', text: 'Q' });
+    const { id } = res.json().question;
     await saved;
-    controller.abort();
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(ctx.questions.detail(id)?.live?.attachments).toMatchObject([
+      { status: 'ready', attachment: { name: 'memory-layout.svg' } },
+    ]);
+    const cancel = await ctx.app.inject({ method: 'DELETE', url: `/api/questions/${id}` });
+    expect(cancel.statusCode).toBe(204);
     expect(await readdir(treeDir())).toEqual(['tree.md']);
+    expect(await tempEntries(treeDir())).toEqual([]);
   });
 
   it('downloads URLs when private URLs are allowed', async () => {
@@ -210,9 +222,9 @@ describe('answers with attachments', () => {
       },
       { allowPrivateUrls: true },
     );
-    const events = parseSse((await post({ parentId: '', text: 'Q' })).body);
-    expect(events[0]?.data).toMatchObject({ status: 'saving', origin: 'url' });
-    expect(events.at(-1)?.data).toEqual({
+    const { question, events } = await post({ parentId: '', text: 'Q' });
+    expect(attachmentEvents(events)[0]).toMatchObject({ status: 'saving', origin: 'url' });
+    expect(expectDone(question)).toMatchObject({
       nodeId: 'img',
       attachments: [
         { name: 'attachment.png', size: png.length, contentType: 'image/png', kind: 'image' },
@@ -226,15 +238,12 @@ describe('answers with attachments', () => {
       name: 'img',
       attachments: [{ at: 0, save: (s) => s.saveFromUrl({ url: `${fileBase}/a.png` }) }],
     });
-    const events = parseSse((await post({ parentId: '', text: 'Q' })).body);
-    expect(events[1]?.data).toMatchObject({
+    const { question, events } = await post({ parentId: '', text: 'Q' });
+    expect(attachmentEvents(events)[1]).toMatchObject({
       status: 'failed',
       message: expect.stringContaining('Blocked private address'),
     });
-    expect(events.at(-1)).toEqual({
-      event: 'done',
-      data: { nodeId: 'img', attachments: [], files: [] },
-    });
+    expect(expectDone(question)).toMatchObject({ nodeId: 'img', attachments: [], files: [] });
   });
 
   it('chain lists attachments and passes them to follow-up questions', async () => {
@@ -315,10 +324,10 @@ describe('answers with attachments', () => {
 
   it('reserves `attachments` as a node name at every level', async () => {
     await setup({ name: 'attachments' });
-    const root = parseSse((await post({ parentId: '', text: 'Q' })).body).at(-1);
-    expect(root?.data).toMatchObject({ nodeId: 'attachments-2' });
-    const child = parseSse((await post({ parentId: 'attachments-2', text: 'Q' })).body).at(-1);
-    expect(child?.data).toMatchObject({ nodeId: 'attachments-2/attachments-2' });
+    const root = await post({ parentId: '', text: 'Q' });
+    expect(expectDone(root.question).nodeId).toBe('attachments-2');
+    const child = await post({ parentId: 'attachments-2', text: 'Q' });
+    expect(expectDone(child.question).nodeId).toBe('attachments-2/attachments-2');
 
     // The hierarchy never shows the reserved folder, only the suffixed nodes.
     const tree = await ctx.app.inject({ method: 'GET', url: '/api/trees/rust' });
@@ -372,7 +381,8 @@ describe('answers with attachments', () => {
         },
       ],
     });
-    const first = post({ parentId: '', text: 'Q' });
+    const first = await postQuestion(ctx, { parentId: '', text: 'Q' });
+    const { id } = first.json().question;
     await new Promise((resolve) => setTimeout(resolve, 20));
     const del = await ctx.app.inject({
       method: 'POST',
@@ -380,7 +390,20 @@ describe('answers with attachments', () => {
       payload: { ids: ['x'] },
     });
     expect(del.statusCode).toBe(409);
+    expect(del.json().details).toEqual({
+      questions: [
+        {
+          id,
+          tree: 'rust',
+          parentId: '',
+          context: { kind: 'main' },
+          title: 'Q',
+          status: 'streaming',
+        },
+      ],
+      preparing: 0,
+    });
     finish();
-    expect(parseSse((await first).body).at(-1)?.event).toBe('done');
+    expect((await ctx.questions.settled(id))?.status).toBe('done');
   });
 });

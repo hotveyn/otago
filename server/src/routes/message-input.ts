@@ -1,23 +1,26 @@
-// Constants mirror .claude/features/chat-file-attachments/contracts/messages.ts
+// Body of POST /trees/:tree/questions. Constants mirror
+// .claude/features/parallel-questions/contracts/questions-api.ts (body encodings unchanged
+// from .claude/features/chat-file-attachments/contracts/messages.ts).
 import type { Multipart, MultipartFile } from '@fastify/multipart';
 import type { FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { InvalidBodyError, UploadError } from '../errors.js';
+import { InvalidBodyError, InvalidInputError, UploadError } from '../errors.js';
+import type { QuestionContext } from '../questions/index.js';
 import {
+  isSameOrDescendant,
   MAX_MESSAGE_FILE_BYTES,
   MAX_MESSAGE_FILES,
   type UserFileStager,
 } from '../storage/index.js';
-import { nodeId } from './schemas.js';
+import { nodeId, questionContext } from './schemas.js';
+
+export { EMPTY_TEXT_QUESTION } from '../questions/index.js';
 
 export const MESSAGE_PAYLOAD_FIELD = 'payload';
 export const MESSAGE_FILES_FIELD = 'files';
 export const MESSAGE_TEXT_MAX = 50_000;
 /** Max bytes of the `payload` field value. */
 export const MESSAGE_PAYLOAD_MAX_BYTES = 256 * 1024;
-/** Question given to the agent when the user sent files without text. */
-export const EMPTY_TEXT_QUESTION =
-  'The user sent the attached files without a message. Look at them and respond helpfully.';
 
 /** JSON body (no files). `text` is required. */
 export const messageBody = z.object({
@@ -27,6 +30,8 @@ export const messageBody = z.object({
   model: z.string().optional(),
   /** Node naming model; defaults to `OTAGO_NAMING_MODEL`. */
   namingModel: z.string().optional(),
+  /** Which chat the question belongs to; default `{ kind: 'main' }`. Echoed back as data. */
+  context: questionContext.optional(),
 });
 
 /**
@@ -199,5 +204,27 @@ export async function drainParts(input: Omit<MultipartMessageInput, 'body'>): Pr
     }
   } catch {
     // The client is gone or the body is malformed; the error reply is sent anyway.
+  }
+}
+
+/** `requested` if it is in the allowlist, `fallback` when absent; 400 otherwise. */
+export function pickModel(
+  requested: string | undefined,
+  fallback: string,
+  available: string[],
+): string {
+  if (requested === undefined) return fallback;
+  if (!available.includes(requested)) {
+    throw new InvalidInputError(`Unknown model "${requested}". Available: ${available.join(', ')}`);
+  }
+  return requested;
+}
+
+/** 400 unless a side `anchor` is the parent itself or one of its ancestors (`""` = root). */
+export function validateContext(parentId: string, context: QuestionContext): void {
+  if (context.kind === 'side' && !isSameOrDescendant(parentId, context.anchor)) {
+    throw new InvalidInputError(
+      `Invalid context: the anchor "${context.anchor}" is not "${parentId}" or one of its ancestors`,
+    );
   }
 }

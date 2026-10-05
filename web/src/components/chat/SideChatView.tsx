@@ -1,18 +1,21 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { ApiError } from '../../api/client';
 import { useChain } from '../../api/queries';
-import type { TreeDetail } from '../../api/types';
+import type { QuestionContext, TreeDetail } from '../../api/types';
 import { describeError, isNodeMissing, nodeMissingMessage } from '../../lib/chat-errors';
+import { stashKeyOf } from '../../lib/draft-stash';
+import { inFlightStatus } from '../../lib/questions';
 import { canPromote, sideParent, sideThread } from '../../lib/side-chat';
-import { nameOf } from '../../lib/tree';
 import type { SideChatState } from '../../lib/url-state';
 import { Button } from '../ui/Button';
 import { ErrorNote } from '../ui/ErrorNote';
+import { IdPath } from '../ui/IdPath';
 import { ChatThread } from './ChatThread';
 import { Composer } from './Composer';
 import { type SelectionAction, SelectionActions } from './SelectionActions';
-import { useChatSession } from './useChatSession';
+import { useComposer } from './useComposer';
+import { useInFlight } from './useInFlight';
 
 export interface SideSeed {
   /** Changes on every "Ask aside", so the same text can be quoted twice. */
@@ -22,19 +25,15 @@ export interface SideSeed {
 
 interface SideChatViewProps {
   tree: TreeDetail;
+  /** Foreground aside; `side.question` is the in-flight question it shows. */
   side: SideChatState;
   /** Quote to append to the draft; applied once per nonce. */
   seed: SideSeed | null;
   onSeedConsumed?: (nonce: number) => void;
-  /** A side send created `nodeId`. */
-  onAdvance: (nodeId: string) => void;
   onPromote: () => void;
+  /** Close the panel; a question in flight keeps answering in the background. */
   onClose: () => void;
-  onStreamingChange: (streaming: boolean) => void;
 }
-
-const sideErrorText = (error: unknown) =>
-  isNodeMissing(error) ? nodeMissingMessage() : describeError(error).message;
 
 /** A "by the way" chat branching from `side.anchor`; the main chat's focus never moves. */
 export function SideChatView({
@@ -42,22 +41,25 @@ export function SideChatView({
   side,
   seed,
   onSeedConsumed,
-  onAdvance,
   onPromote,
   onClose,
-  onStreamingChange,
 }: SideChatViewProps) {
   const { t } = useTranslation(['chat', 'common']);
   const parentId = sideParent(side);
+  const context = useMemo<QuestionContext>(
+    () => ({ kind: 'side', anchor: side.anchor }),
+    [side.anchor],
+  );
   const chain = useChain(tree.id, parentId);
   const scroller = useRef<HTMLDivElement>(null);
-  const session = useChatSession({
+  const inFlight = useInFlight({ treeId: tree.id, context, parentId, focus: side.question });
+  const composer = useComposer({
     treeId: tree.id,
-    parentId,
-    onSent: onAdvance,
-    onStreamingChange,
+    stashKey: stashKeyOf(tree.id, context),
+    target: { parentId, context },
+    locked: inFlight.locked,
   });
-  const { pending, streaming, quote, appendToDraft } = session;
+  const { quote, appendToDraft, discard } = composer;
 
   const applied = useRef<number | null>(null);
   useEffect(() => {
@@ -76,13 +78,19 @@ export function SideChatView({
     () => sideThread(chain.data ?? [], side.anchor),
     [chain.data, side.anchor],
   );
-  const showPending = pending !== null && pending.parentId === parentId;
+  const view = inFlight.view;
+  const status = view ? inFlightStatus(view) : null;
   const chainMissing = chain.error instanceof ApiError && chain.error.status === 404;
-  const promotable = canPromote(side, streaming) && !chainMissing;
-  const anchorName = side.anchor === '' ? t('common:root') : nameOf(side.anchor);
+  const promotable = canPromote(side) && !chainMissing;
+
+  // An explicit close forgets the draft of this aside (switching asides keeps it).
+  const close = useCallback(() => {
+    discard();
+    onClose();
+  }, [discard, onClose]);
 
   const closeButton = (
-    <Button size="sm" onClick={onClose}>
+    <Button size="sm" onClick={close}>
       {t('side.close')}
     </Button>
   );
@@ -94,8 +102,8 @@ export function SideChatView({
           <Trans
             t={t}
             i18nKey="side.title"
-            values={{ anchor: anchorName }}
-            components={{ code: <code /> }}
+            values={{ anchor: side.anchor }}
+            components={{ code: <IdPath id={side.anchor} /> }}
           />
         </span>
         <span className="side-actions">
@@ -105,7 +113,7 @@ export function SideChatView({
             title={
               side.head === null
                 ? t('side.sendFirst')
-                : streaming
+                : side.question !== null
                   ? t('side.waitAnswer')
                   : t('side.focusHint')
             }
@@ -118,7 +126,7 @@ export function SideChatView({
             className="icon-btn"
             aria-label={t('side.close')}
             title={t('side.close')}
-            onClick={onClose}
+            onClick={close}
           >
             ×
           </button>
@@ -128,14 +136,12 @@ export function SideChatView({
       <ChatThread
         treeId={tree.id}
         messages={messages}
-        pending={pending}
-        showPending={showPending}
-        currentId={side.head ?? undefined}
-        onDismissError={session.dismissError}
+        inFlight={view}
+        inFlightActions={inFlight.actions}
+        inFlightFooter={(error) => (isNodeMissing(error) ? closeButton : null)}
+        currentId={side.question === null ? (side.head ?? undefined) : undefined}
         scrollerRef={scroller}
         scrollKey={side.anchor}
-        errorText={sideErrorText}
-        pendingFooter={(error) => (isNodeMissing(error) ? closeButton : null)}
         error={
           chain.error ? (
             <>
@@ -157,21 +163,23 @@ export function SideChatView({
       <SelectionActions container={scroller} actions={selectionActions} resetKey={side.head} />
 
       <Composer
-        ref={session.composer}
-        value={session.draft}
-        onChange={session.setDraft}
-        onSend={session.send}
-        onStop={session.stop}
-        streaming={streaming}
+        ref={composer.composer}
+        value={composer.draft}
+        onChange={composer.setDraft}
+        onSend={composer.send}
+        onCancel={inFlight.cancel}
+        locked={composer.locked}
+        lockedStatus={status === 'saving' || status === 'cancelling' ? status : null}
+        targetNote={status === 'failed' ? 'failed' : composer.locked ? 'waiting' : null}
         target={parentId}
-        models={session.models}
-        onModelsChange={session.changeModels}
-        files={session.files}
-        fileErrors={session.fileErrors}
-        onAddFiles={session.addFiles}
-        onRemoveFile={session.removeFile}
-        onDismissFileErrors={session.dismissFileErrors}
-        canSend={session.canSend}
+        models={composer.models}
+        onModelsChange={composer.changeModels}
+        files={composer.files}
+        fileErrors={composer.fileErrors}
+        onAddFiles={composer.addFiles}
+        onRemoveFile={composer.removeFile}
+        onDismissFileErrors={composer.dismissFileErrors}
+        canSend={composer.canSend}
       />
     </div>
   );

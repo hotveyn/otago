@@ -222,6 +222,24 @@ export function nodePromptFiles(nodeId: string, files: UserFileInfo[]): PromptFi
   return files.map((file) => promptFileOf(`${nodeId}/${USER_FILES_DIR}`, file));
 }
 
+/** Tree-relative POSIX path of `<stagingDir>/files`. */
+function stagedFilesFolder(treeDir: string, stagingDir: string): string {
+  return path.relative(treeDir, path.join(stagingDir, USER_FILES_DIR)).split(path.sep).join('/');
+}
+
+/**
+ * Files already in `<stagingDir>/files/` (e.g. held files moved back for a retry) and their
+ * prompt lines, relative to `treeDir`. The stager only knows files it staged itself.
+ */
+export async function stagedPromptFiles(
+  treeDir: string,
+  stagingDir: string,
+): Promise<{ files: UserFileInfo[]; prompt: PromptFile[] }> {
+  const files = await listUserFiles(stagingDir);
+  const folder = stagedFilesFolder(treeDir, stagingDir);
+  return { files, prompt: files.map((file) => promptFileOf(folder, file)) };
+}
+
 interface Signature {
   label: string;
   matches: (head: Buffer) => boolean;
@@ -394,7 +412,7 @@ export function createUserFileStager(options: UserFileStagerOptions): UserFileSt
     },
 
     promptFiles(treeDir) {
-      const folder = path.relative(treeDir, dir).split(path.sep).join('/');
+      const folder = stagedFilesFolder(treeDir, options.stagingDir);
       return files.map((file) => promptFileOf(folder, file));
     },
   };

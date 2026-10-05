@@ -1,10 +1,23 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { TreeLocks } from '../src/agent/index.js';
+import { type Agent, type AgentEvent, TreeLocks } from '../src/agent/index.js';
 import { buildApp } from '../src/app.js';
 import { createNode, type HierarchyNode } from '../src/storage/index.js';
-import { fakeAgent, makeTempDir } from './helpers.js';
+import {
+  askAndSettle,
+  eventKinds,
+  expectDone,
+  expectFailed,
+  fakeAgent,
+  makeApp,
+  makeTempDir,
+  TEST_MODELS,
+  type TestContext,
+} from './helpers.js';
+
+/** An anonymous shared holder (no question): counted as `preparing`. */
+const ANONYMOUS_BUSY = { questions: [], preparing: 1 };
 
 /** Flatten a hierarchy into sorted ids. */
 function ids(nodes: HierarchyNode[]): string[] {
@@ -168,10 +181,12 @@ describe('node management API', () => {
     expect(deleted.json()).toEqual({
       error: 'Tree "rust" is busy: an answer is still streaming. Try again when it finishes.',
       code: 'tree_busy_streaming',
+      details: ANONYMOUS_BUSY,
     });
     const moved = await move({ ids: ['lifetimes'], targetParentId: 'ownership' });
     expect(moved.statusCode).toBe(409);
     expect(moved.json().code).toBe('tree_busy_streaming');
+    expect(moved.json().details).toEqual(ANONYMOUS_BUSY);
     release();
     expect((await del({ ids: ['lifetimes'] })).statusCode).toBe(200);
     expect(locks.isLocked('rust')).toBe(false);
@@ -182,6 +197,7 @@ describe('node management API', () => {
     const deleted = await del({ ids: ['lifetimes'] });
     expect(deleted.statusCode).toBe(409);
     expect(deleted.json().code).toBe('tree_busy_structural');
+    expect(deleted.json()).not.toHaveProperty('details');
     const moved = await move({ ids: ['lifetimes'], targetParentId: 'ownership' });
     expect(moved.statusCode).toBe(409);
     expect(moved.json().code).toBe('tree_busy_structural');
@@ -410,6 +426,7 @@ describe('soft delete, restore and move names', () => {
     const streaming = await post('restore', { trashIds: [deleted.lifetimes] });
     expect(streaming.statusCode).toBe(409);
     expect(streaming.json().code).toBe('tree_busy_streaming');
+    expect(streaming.json().details).toEqual(ANONYMOUS_BUSY);
     shared();
     const exclusive = locks.acquireExclusive('rust');
     const structural = await post('restore', { trashIds: [deleted.lifetimes] });
@@ -418,6 +435,45 @@ describe('soft delete, restore and move names', () => {
     exclusive();
     expect((await post('restore', { trashIds: [deleted.lifetimes] })).statusCode).toBe(200);
     expect(locks.isLocked('rust')).toBe(false);
+  });
+
+  it('move names: Unicode names are accepted; NFD keys and values are normalized', async () => {
+    const res = await post('move', {
+      ids: ['lifetimes'],
+      targetParentId: 'ownership',
+      names: { lifetimes: 'время-жизни' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().moved).toEqual({ lifetimes: 'ownership/время-жизни' });
+    const back = await post('move', {
+      ids: ['ownership/время-жизни'.normalize('NFD')],
+      targetParentId: '',
+      names: { ['ownership/время-жизни'.normalize('NFD')]: 'жизнь'.normalize('NFD') },
+    });
+    expect(back.statusCode).toBe(200);
+    expect(back.json().moved).toEqual({ 'ownership/время-жизни': 'жизнь' });
+    for (const name of ['Жизнь', 'жизнь мира', 'ﬁles']) {
+      const bad = await post('move', {
+        ids: ['жизнь'],
+        targetParentId: 'ownership',
+        names: { жизнь: name },
+      });
+      expect(bad.statusCode, name).toBe(400);
+    }
+  });
+
+  it('restore accepts NFD trash ids (normalized to NFC)', async () => {
+    const renamed = await app.inject({
+      method: 'POST',
+      url: '/api/trees/rust/nodes/rename',
+      payload: { id: 'lifetimes', name: 'Ёлка' },
+    });
+    expect(renamed.json().id).toBe('ёлка');
+    const { deleted } = (await post('delete', { ids: ['ёлка'.normalize('NFD')] })).json();
+    expect(deleted).toEqual({ ёлка: expect.stringMatching(/^ёлка\.deleted-\d{13}$/) });
+    const res = await post('restore', { trashIds: [deleted.ёлка.normalize('NFD')] });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().restored).toEqual({ [deleted.ёлка]: 'ёлка' });
   });
 
   it('a node created after delete reuses the plain name', async () => {
@@ -544,6 +600,7 @@ describe('node rename API', () => {
     expect(streaming.json()).toEqual({
       error: 'Tree "rust" is busy: an answer is still streaming. Try again when it finishes.',
       code: 'tree_busy_streaming',
+      details: ANONYMOUS_BUSY,
     });
     shared();
     const exclusive = locks.acquireExclusive('rust');
@@ -559,6 +616,28 @@ describe('node rename API', () => {
     expect(locks.isLocked('rust')).toBe(false);
   });
 
+  it('renames to Unicode names; NFD ids resolve', async () => {
+    const res = await rename({ id: 'ownership/borrowing', name: 'Привет' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      id: 'ownership/привет',
+      name: 'привет',
+      renamed: {
+        'ownership/borrowing': 'ownership/привет',
+        'ownership/borrowing/rules': 'ownership/привет/rules',
+      },
+    });
+    const nfd = await rename({ id: 'ownership/привет'.normalize('NFD'), name: 'Café crème' });
+    expect(nfd.json().id).toBe('ownership/café-crème');
+    const viaNfd = await chain('ownership/café-crème/rules'.normalize('NFD'));
+    expect(viaNfd.statusCode).toBe(200);
+    expect(viaNfd.json().chain.map((n: { id: string }) => n.id)).toEqual([
+      'ownership',
+      'ownership/café-crème',
+      'ownership/café-crème/rules',
+    ]);
+  });
+
   it('undo round-trip restores the original hierarchy', async () => {
     const before = await hierarchy();
     const { id } = (await rename({ id: 'ownership', name: 'Owning' })).json();
@@ -566,5 +645,214 @@ describe('node rename API', () => {
     const back = await rename({ id, name: 'ownership' });
     expect(back.json().id).toBe('ownership');
     expect(await hierarchy()).toEqual(before);
+  });
+});
+
+describe('structural ops keep retained questions consistent', () => {
+  let ctx: TestContext;
+  afterEach(() => ctx.close());
+
+  /** Answers everything except questions starting with `fail`. */
+  const agent: Agent = {
+    async *ask(input): AsyncGenerator<AgentEvent> {
+      if (input.question.startsWith('fail')) throw new Error('boom');
+      yield { type: 'done', text: `answer ${input.question}`, model: input.model };
+    },
+    async name(input) {
+      return input.question;
+    },
+  };
+
+  beforeEach(async () => {
+    ctx = await makeApp(agent, TEST_MODELS);
+    await ctx.app.inject({ method: 'POST', url: '/api/trees', payload: { title: 'Rust' } });
+    // a/{b}, c
+    await askAndSettle(ctx, { parentId: '', text: 'a' });
+    await askAndSettle(ctx, { parentId: 'a', text: 'b' });
+    await askAndSettle(ctx, { parentId: '', text: 'c' });
+  });
+
+  const op = (name: string, body: object) =>
+    ctx.app.inject({ method: 'POST', url: `/api/trees/rust/nodes/${name}`, payload: body });
+
+  it('move remaps parentId, anchor and done nodeId (prefix rule) and emits question', async () => {
+    const failed = expectFailed(
+      (
+        await askAndSettle(ctx, {
+          parentId: 'a/b',
+          text: 'fail here',
+          context: { kind: 'side', anchor: 'a' },
+        })
+      ).question,
+    );
+    const done = expectDone((await askAndSettle(ctx, { parentId: 'a', text: 'kept' })).question);
+    const untouched = expectFailed(
+      (await askAndSettle(ctx, { parentId: 'c', text: 'fail c' })).question,
+    );
+    const before = ctx.events.all.length;
+
+    const res = await op('move', { ids: ['a'], targetParentId: 'c' });
+    expect(res.json().moved).toEqual({ a: 'c/a' });
+    expect(ctx.questions.get(failed.id)).toMatchObject({
+      status: 'failed',
+      parentId: 'c/a/b',
+      context: { kind: 'side', anchor: 'c/a' },
+    });
+    expect(ctx.questions.get(done.id)).toMatchObject({ parentId: 'c/a', nodeId: 'c/a/kept' });
+    expect(ctx.questions.get(untouched.id)).toEqual(untouched);
+    // The setup's own done entries follow too (`a` → node `c/a`, `b` under it); `c` does not.
+    const emitted = ctx.events.all.slice(before);
+    expect(eventKinds(emitted)).toEqual([
+      'question:done',
+      'question:done',
+      'question:failed',
+      'question:done',
+    ]);
+    expect(emitted.map((e) => (e.event === 'question' ? e.data.question.text : ''))).toEqual([
+      'a',
+      'b',
+      'fail here',
+      'kept',
+    ]);
+    expect(emitted.map((e) => (e.event === 'question' ? e.data.question.parentId : ''))).toEqual([
+      '',
+      'c/a',
+      'c/a/b',
+      'c/a',
+    ]);
+  });
+
+  it('a move out of the anchor subtree resets the anchor to the parent', async () => {
+    const failed = expectFailed(
+      (
+        await askAndSettle(ctx, {
+          parentId: 'a/b',
+          text: 'fail aside',
+          context: { kind: 'side', anchor: 'a' },
+        })
+      ).question,
+    );
+    await op('move', { ids: ['a/b'], targetParentId: 'c' });
+    expect(ctx.questions.get(failed.id)).toMatchObject({
+      parentId: 'c/b',
+      context: { kind: 'side', anchor: 'c/b' },
+    });
+  });
+
+  it('rename remaps retained questions (with a question event)', async () => {
+    const failed = expectFailed(
+      (await askAndSettle(ctx, { parentId: 'a/b', text: 'fail' })).question,
+    );
+    const before = ctx.events.all.length;
+    const res = await op('rename', { id: 'a', name: 'Привет' });
+    expect(res.json().id).toBe('привет');
+    expect(ctx.questions.get(failed.id)?.parentId).toBe('привет/b');
+    const emitted = ctx.events.all.slice(before);
+    expect(eventKinds(emitted)).toEqual(['question:done', 'question:done', 'question:failed']);
+    expect(emitted.map((e) => (e.event === 'question' ? e.data.question.text : ''))).toEqual([
+      'a',
+      'b',
+      'fail',
+    ]);
+    // Retry runs under the remapped parent.
+    const retried = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/questions/${failed.id}/retry`,
+    });
+    expect(retried.statusCode).toBe(202);
+    const settled = await ctx.questions.settled(failed.id);
+    // Still fails (same text), but under the new parent: nothing was written.
+    expect(expectFailed(settled)).toMatchObject({ attempt: 2, parentId: 'привет/b' });
+  });
+
+  it('a same-name rename emits nothing', async () => {
+    expectFailed((await askAndSettle(ctx, { parentId: 'a', text: 'fail' })).question);
+    const before = ctx.events.all.length;
+    await op('rename', { id: 'a', name: 'A' });
+    expect(ctx.events.all.length).toBe(before);
+  });
+
+  it('delete removes questions under the deleted subtree; restore does not bring them back', async () => {
+    const underB = expectFailed(
+      (await askAndSettle(ctx, { parentId: 'a/b', text: 'fail b' })).question,
+    );
+    const onA = expectFailed((await askAndSettle(ctx, { parentId: 'a', text: 'fail a' })).question);
+    const doneUnderA = expectDone(
+      (await askAndSettle(ctx, { parentId: 'a', text: 'kept' })).question,
+    );
+    const elsewhere = expectFailed(
+      (await askAndSettle(ctx, { parentId: 'c', text: 'fail c' })).question,
+    );
+    const before = ctx.events.all.length;
+
+    const { deleted } = (await op('delete', { ids: ['a'] })).json();
+    const removed = ctx.events.all.slice(before);
+    expect(removed.map((e) => e.data)).toEqual(
+      expect.arrayContaining([
+        { id: underB.id, tree: 'rust', reason: 'deleted' },
+        { id: onA.id, tree: 'rust', reason: 'deleted' },
+        { id: doneUnderA.id, tree: 'rust', reason: 'deleted', nodeId: 'a/kept' },
+        // The setup's done entries of `a` itself and of `a/b`.
+        expect.objectContaining({ reason: 'deleted', nodeId: 'a' }),
+        expect.objectContaining({ reason: 'deleted', nodeId: 'a/b' }),
+      ]),
+    );
+    expect(removed).toHaveLength(5);
+    expect(ctx.questions.get(elsewhere.id)).toEqual(elsewhere);
+
+    const restored = await op('restore', { trashIds: [deleted.a] });
+    expect(restored.statusCode).toBe(200);
+    expect(
+      ctx.questions
+        .list()
+        .map((q) => q.text)
+        .sort(),
+    ).toEqual(['c', 'fail c']);
+    expect(ctx.events.all.length).toBe(before + 5);
+  });
+
+  it('409 details list the running question that blocks a structural op', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const slowCtx = await makeApp(fakeAgent({ gate: () => gate }), TEST_MODELS);
+    try {
+      await slowCtx.app.inject({ method: 'POST', url: '/api/trees', payload: { title: 'Go' } });
+      const started = await slowCtx.app.inject({
+        method: 'POST',
+        url: '/api/trees/go/questions',
+        payload: {
+          parentId: '',
+          text: '  Why\n  goroutines? ',
+          context: { kind: 'side', anchor: '' },
+        },
+      });
+      const { id, title } = started.json().question;
+      expect(title).toBe('Why');
+      const res = await slowCtx.app.inject({
+        method: 'POST',
+        url: '/api/trees/go/nodes/restore',
+        payload: { trashIds: ['x.deleted-1759000000000'] },
+      });
+      expect(res.statusCode).toBe(409);
+      expect(res.json().details).toEqual({
+        questions: [
+          {
+            id,
+            tree: 'go',
+            parentId: '',
+            context: { kind: 'side', anchor: '' },
+            title: 'Why',
+            status: 'streaming',
+          },
+        ],
+        preparing: 0,
+      });
+      release();
+      await slowCtx.questions.settled(id);
+    } finally {
+      await slowCtx.close();
+    }
   });
 });

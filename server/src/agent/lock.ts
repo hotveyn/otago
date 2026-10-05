@@ -1,4 +1,4 @@
-import { type ConflictCode, ConflictError } from '../errors.js';
+import { type ConflictCode, TreeBusyError } from '../errors.js';
 
 /** Exact 409 messages; `<tree>` is replaced by the tree id. Mirrors the side-chat contract. */
 const CONFLICT_MESSAGES: Record<ConflictCode, string> = {
@@ -13,14 +13,26 @@ export interface TreeLockStatus {
   exclusive: boolean;
 }
 
-function conflict(treeId: string, code: ConflictCode): ConflictError {
-  return new ConflictError(CONFLICT_MESSAGES[code].replace('<tree>', treeId), code);
+interface TreeLockState extends TreeLockStatus {
+  /** Shared holders (multiset): holder id → number of acquisitions. */
+  holders: Map<string, number>;
+}
+
+function conflict(treeId: string, code: ConflictCode, holders: string[] = []): TreeBusyError {
+  return new TreeBusyError(
+    CONFLICT_MESSAGES[code].replace('<tree>', treeId),
+    code,
+    treeId,
+    holders,
+  );
 }
 
 /**
  * Per-tree readers–writer lock, in memory, per process.
  *
- * - Shared: message streams. Any number may run at once in one tree.
+ * - Shared: questions being answered (and start/retry requests preparing them). Any number may
+ *   run at once in one tree. Each acquisition carries a holder id (the question id), so a
+ *   structural 409 can list its blockers.
  * - Exclusive: structural ops (move/delete/restore/rename). Only when nothing else is held.
  *
  * Conflicts are rejected with 409 (never queued). Acquisition is synchronous, so the check
@@ -28,7 +40,8 @@ function conflict(treeId: string, code: ConflictCode): ConflictError {
  * future cap on shared holders or a queueing policy.
  */
 export class TreeLocks {
-  private readonly state = new Map<string, TreeLockStatus>();
+  private readonly state = new Map<string, TreeLockState>();
+  private anonymous = 0;
 
   status(treeId: string): TreeLockStatus {
     const entry = this.state.get(treeId);
@@ -41,16 +54,29 @@ export class TreeLocks {
     return exclusive || shared > 0;
   }
 
-  /** Take a shared lock or throw 409 `tree_busy_structural`. Returns an idempotent release. */
-  acquireShared(treeId: string): () => void {
+  /** Ids of the current shared holders (anonymous acquisitions get unique `anon:<n>` ids). */
+  holders(treeId: string): string[] {
+    return [...(this.state.get(treeId)?.holders.keys() ?? [])];
+  }
+
+  /**
+   * Take a shared lock for `holder` (default: a unique anonymous id) or throw 409
+   * `tree_busy_structural`. Returns an idempotent release.
+   */
+  acquireShared(treeId: string, holder?: string): () => void {
     const entry = this.entry(treeId);
     if (entry.exclusive) {
       this.cleanup(treeId);
       throw conflict(treeId, 'tree_busy_structural');
     }
+    const id = holder ?? `anon:${++this.anonymous}`;
     entry.shared++;
+    entry.holders.set(id, (entry.holders.get(id) ?? 0) + 1);
     return this.releaser(treeId, (current) => {
       current.shared--;
+      const count = (current.holders.get(id) ?? 0) - 1;
+      if (count > 0) current.holders.set(id, count);
+      else current.holders.delete(id);
     });
   }
 
@@ -58,7 +84,7 @@ export class TreeLocks {
   acquireExclusive(treeId: string): () => void {
     const entry = this.entry(treeId);
     if (entry.exclusive) throw conflict(treeId, 'tree_busy_structural');
-    if (entry.shared > 0) throw conflict(treeId, 'tree_busy_streaming');
+    if (entry.shared > 0) throw conflict(treeId, 'tree_busy_streaming', this.holders(treeId));
     entry.exclusive = true;
     return this.releaser(treeId, (current) => {
       current.exclusive = false;
@@ -83,10 +109,10 @@ export class TreeLocks {
     }
   }
 
-  private entry(treeId: string): TreeLockStatus {
+  private entry(treeId: string): TreeLockState {
     let entry = this.state.get(treeId);
     if (!entry) {
-      entry = { shared: 0, exclusive: false };
+      entry = { shared: 0, exclusive: false, holders: new Map() };
       this.state.set(treeId, entry);
     }
     return entry;
@@ -97,7 +123,7 @@ export class TreeLocks {
     if (entry && entry.shared === 0 && !entry.exclusive) this.state.delete(treeId);
   }
 
-  private releaser(treeId: string, undo: (entry: TreeLockStatus) => void): () => void {
+  private releaser(treeId: string, undo: (entry: TreeLockState) => void): () => void {
     let released = false;
     return () => {
       if (released) return;

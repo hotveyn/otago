@@ -9,6 +9,10 @@ export const sidebar = {
     new: '+ New',
     empty: 'No trees yet.',
     titlePlaceholder: 'Tree title, e.g. Rust basics',
+    running_one: '{{count}} answer in progress',
+    running_other: '{{count}} answers in progress',
+    failed_one: '{{count}} failed answer',
+    failed_other: '{{count}} failed answers',
   },
   settings: {
     title: 'Settings',

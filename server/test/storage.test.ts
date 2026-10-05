@@ -27,7 +27,7 @@ import {
   saveSource,
   serializeNodeFile,
   serializeTreeFile,
-  toKebabCase,
+  toTreeId,
   trashDirOf,
   treeDirOf,
   updateTree,
@@ -279,6 +279,64 @@ describe('tree hierarchy', () => {
     expect((await readdir(treeDir)).sort()).toEqual(['topic', 'topic-2', 'topic-3', 'tree.md']);
   });
 
+  it('creates Unicode node names (NFC, lowercase)', async () => {
+    const id = await createNode(treeDir, '', 'Правила Заимствования', node('2026-09-23T10:00:00Z'));
+    expect(id).toBe('правила-заимствования');
+    const child = await createNode(treeDir, id, 'Café crème', node('2026-09-23T10:01:00Z'));
+    expect(child).toBe('правила-заимствования/café-crème');
+    expect(child).toBe(child.normalize('NFC'));
+    const hierarchy = await readHierarchy(treeDir);
+    expect(hierarchy[0]).toMatchObject({ id, name: id, children: [{ id: child }] });
+    expect((await readChain(treeDir, child)).map((n) => n.name)).toEqual([
+      'правила-заимствования',
+      'café-crème',
+    ]);
+  });
+
+  it('treats names that fold together (APFS) as taken', async () => {
+    expect(await createNode(treeDir, '', 'straße', node('2026-09-23T10:00:00Z'))).toBe('straße');
+    expect(await createNode(treeDir, '', 'strasse', node('2026-09-23T10:01:00Z'))).toBe(
+      'strasse-2',
+    );
+    expect(await createNode(treeDir, '', 'λόγος', node('2026-09-23T10:02:00Z'))).toBe('λόγος');
+    expect(await createNode(treeDir, '', 'λόγοσ', node('2026-09-23T10:03:00Z'))).toBe('λόγοσ-2');
+    // `ё` and `е` do not fold together.
+    expect(await createNode(treeDir, '', 'ёлка', node('2026-09-23T10:04:00Z'))).toBe('ёлка');
+    expect(await createNode(treeDir, '', 'елка', node('2026-09-23T10:05:00Z'))).toBe('елка');
+    // `ﬁles` folds to the reserved `files`.
+    expect(await createNode(treeDir, '', 'files', node('2026-09-23T10:06:00Z'))).toBe('files-2');
+  });
+
+  it('never overwrites a folder that differs only by case', async () => {
+    await mkdir(path.join(treeDir, 'Topic'), { recursive: true });
+    await writeFile(path.join(treeDir, 'Topic', 'keep.txt'), 'x');
+    expect(await createNode(treeDir, '', 'topic', node('2026-09-23T10:00:00Z'))).toBe('topic-2');
+    expect(await readFile(path.join(treeDir, 'Topic', 'keep.txt'), 'utf8')).toBe('x');
+  });
+
+  it.skipIf(process.platform !== 'darwin')(
+    'lists a hand-made NFD folder under its NFC id and opens it by that id',
+    async () => {
+      const nfd = 'ёлка'.normalize('NFD');
+      await mkdir(path.join(treeDir, nfd));
+      await writeFile(
+        path.join(treeDir, nfd, 'node.md'),
+        serializeNodeFile(node('2026-09-23T10:00:00Z', 'Q ёлка')),
+      );
+      const hierarchy = await readHierarchy(treeDir);
+      expect(hierarchy.map((n) => n.id)).toEqual(['ёлка'.normalize('NFC')]);
+      const [chainNode] = await readChain(treeDir, 'ёлка'.normalize('NFC'));
+      expect(chainNode?.user).toBe('Q ёлка');
+    },
+  );
+
+  it('rejects an NFD node id at the storage layer (routes normalize first)', async () => {
+    await createNode(treeDir, '', 'ёлка', node('2026-09-23T10:00:00Z'));
+    await expect(readChain(treeDir, 'ёлка'.normalize('NFD'))).rejects.toMatchObject({
+      statusCode: 400,
+    });
+  });
+
   it('rejects creating under a missing parent', async () => {
     await expect(
       createNode(treeDir, 'nope', 'x', node('2026-09-23T10:00:00Z')),
@@ -356,11 +414,34 @@ describe('path safety', () => {
     }
   });
 
-  it('kebab-cases names', () => {
-    expect(toKebabCase('  Hello, World!  ')).toBe('hello-world');
-    expect(toKebabCase('Café crème')).toBe('cafe-creme');
-    expect(toKebabCase('Привет')).toBe('node');
-    expect(toKebabCase('../../etc')).toBe('etc');
+  it('tree ids stay ASCII kebab-case', () => {
+    expect(toTreeId('  Hello, World!  ')).toBe('hello-world');
+    expect(toTreeId('Café crème')).toBe('cafe-creme');
+    expect(toTreeId('Привет')).toBe('tree');
+    expect(toTreeId('Привет', 'node')).toBe('node');
+    expect(toTreeId('../../etc')).toBe('etc');
+  });
+
+  it('accepts Unicode node ids in NFC only; reserved names by key', () => {
+    expect(nodeIdSegments('правила/заимствование')).toEqual(['правила', 'заимствование']);
+    expect(nodeIdSegments('café-crème')).toEqual(['café-crème']);
+    for (const bad of [
+      'café'.normalize('NFD'),
+      'Привет',
+      'a--b',
+      '-a',
+      'a b',
+      'x.deleted-1759000000000',
+      'ﬁles',
+      'a/ﬁles',
+      'ﬁles/x',
+      'Sources',
+      'a\u200db',
+    ]) {
+      expect(() => nodeIdSegments(bad), bad).toThrow('Invalid node id');
+    }
+    // `sources` is reserved only at the root.
+    expect(nodeIdSegments('a/sources')).toEqual(['a', 'sources']);
   });
 });
 
@@ -384,9 +465,19 @@ describe('soft-delete naming', () => {
       'a.deleted-12',
       'a.deleted-1759000000000-1',
       'A.deleted-1759000000000',
+      `${'é'.normalize('NFD')}.deleted-1759000000000`,
     ]) {
       expect(isDeletedName(name), name).toBe(false);
     }
+  });
+
+  it('recognizes Unicode trash names', () => {
+    expect(isDeletedName(deletedNameFor('правила-заимствования', now))).toBe(true);
+    expect(isDeletedName(deletedNameFor('हिन्दी-नाम', now, 2))).toBe(true);
+    expect(DELETED_NAME_RE.exec('ёлка.deleted-1759000000000')?.groups?.name).toBe('ёлка');
+    // The regex alone accepts uppercase; `isDeletedName` does not.
+    expect(DELETED_NAME_RE.test('Ёлка.deleted-1759000000000')).toBe(true);
+    expect(isDeletedName('Ёлка.deleted-1759000000000')).toBe(false);
   });
 
   it('parses trash ids', () => {
@@ -417,9 +508,19 @@ describe('soft-delete naming', () => {
       'sources.deleted-1759000000000',
       'a\\x.deleted-1759000000000',
       '/abs/x.deleted-1759000000000',
+      'A.deleted-1759000000000',
+      'ﬁles.deleted-1759000000000',
+      'x/ﬁles.deleted-1759000000000',
+      `${'é'.normalize('NFD')}.deleted-1759000000000`,
     ]) {
       expect(() => parseTrashId(bad), bad).toThrow(/Invalid trash id/);
     }
+    expect(parseTrashId('правила/ёлка.deleted-1759000000000-3')).toEqual({
+      parentId: 'правила',
+      folder: 'ёлка.deleted-1759000000000-3',
+      originalName: 'ёлка',
+      deletedAt: now,
+    });
   });
 });
 

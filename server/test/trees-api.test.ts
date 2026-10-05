@@ -1,8 +1,17 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { Agent, AgentEvent } from '../src/agent/index.js';
 import { createNode } from '../src/storage/index.js';
-import { makeApp } from './helpers.js';
+import {
+  askAndSettle,
+  eventKinds,
+  expectDone,
+  expectFailed,
+  makeApp,
+  TEST_MODELS,
+  type TestContext,
+} from './helpers.js';
 
 describe('trees API', () => {
   let ctx: Awaited<ReturnType<typeof makeApp>>;
@@ -216,6 +225,7 @@ describe('tree rename (PATCH title)', () => {
     expect(res.json()).toEqual({
       error: 'Tree "rust" is busy: an answer is still streaming. Try again when it finishes.',
       code: 'tree_busy_streaming',
+      details: { questions: [], preparing: 1 },
     });
     expect((await patch('rust', { instructions: 'ok' })).statusCode).toBe(200);
     release();
@@ -255,5 +265,58 @@ describe('tree rename (PATCH title)', () => {
       previous: { id: 'rust-basics', title: 'Rust Basics' },
     });
     expect(await listIds()).toEqual(['rust']);
+  });
+});
+
+describe('tree rename and retained questions', () => {
+  let ctx: TestContext;
+  afterEach(() => ctx.close());
+
+  it('rewrites `tree` on retained questions; a tree-less retry runs in the renamed tree', async () => {
+    let failNext = true;
+    const agent: Agent = {
+      async *ask(input): AsyncGenerator<AgentEvent> {
+        if (failNext) {
+          failNext = false;
+          throw new Error('boom');
+        }
+        yield { type: 'done', text: 'A', model: input.model };
+      },
+      async name() {
+        return 'answer';
+      },
+    };
+    ctx = await makeApp(agent, TEST_MODELS);
+    await ctx.app.inject({ method: 'POST', url: '/api/trees', payload: { title: 'Rust' } });
+    await ctx.app.inject({ method: 'POST', url: '/api/trees', payload: { title: 'Go' } });
+    const failed = expectFailed((await askAndSettle(ctx, { parentId: '', text: 'Q' })).question);
+    const other = expectDone((await askAndSettle(ctx, { parentId: '', text: 'Q' }, 'go')).question);
+    const before = ctx.events.all.length;
+
+    const renamed = await ctx.app.inject({
+      method: 'PATCH',
+      url: '/api/trees/rust',
+      payload: { title: 'Rust Basics' },
+    });
+    expect(renamed.json().id).toBe('rust-basics');
+    expect(ctx.questions.get(failed.id)).toMatchObject({ tree: 'rust-basics', status: 'failed' });
+    expect(ctx.questions.get(other.id)).toEqual(other);
+    expect(eventKinds(ctx.events.all.slice(before))).toEqual(['question:failed']);
+    const list = await ctx.app.inject({ method: 'GET', url: '/api/questions?tree=rust-basics' });
+    expect(list.json().questions.map((q: { id: string }) => q.id)).toEqual([failed.id]);
+
+    const retried = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/questions/${failed.id}/retry`,
+    });
+    expect(retried.statusCode).toBe(202);
+    expect(retried.json().question).toMatchObject({ tree: 'rust-basics', attempt: 2 });
+    const done = expectDone(await ctx.questions.settled(failed.id));
+    expect(done.nodeId).toBe('answer');
+    const node = await readFile(
+      path.join(ctx.treesDir, 'rust-basics', 'answer', 'node.md'),
+      'utf8',
+    );
+    expect(node).toContain('Q');
   });
 });

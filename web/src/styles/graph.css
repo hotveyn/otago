@@ -110,11 +110,6 @@
   animation: box-pop 0.34s cubic-bezier(0.2, 0.8, 0.3, 1.3);
 }
 
-/* The node being answered breathes while the agent works. */
-.box-current.box-busy {
-  animation: box-busy 1.6s ease-in-out infinite;
-}
-
 .box-root.box-current {
   background: var(--accent);
 }
@@ -153,6 +148,103 @@
   box-shadow: none;
 }
 
+/* ---------- Pending (in-flight) boxes ---------- */
+
+.box-pending {
+  position: relative;
+  border-color: transparent;
+  background: var(--surface);
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.box-pending:hover {
+  border-color: transparent;
+}
+
+.box-pending .box-label {
+  -webkit-line-clamp: 1;
+}
+
+/* Marching dashed outline, drawn over the (transparent) border. */
+.box-ring {
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.box-ring rect {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.2;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+  animation: box-march 0.6s linear infinite;
+}
+
+/* The answer is complete; only saving is left. */
+.box-pending-naming .box-ring rect,
+.box-pending-done .box-ring rect {
+  animation-duration: 1.6s;
+}
+
+.box-pending-sending .box-ring rect,
+.box-pending-uploading .box-ring rect {
+  stroke: var(--accent-line);
+}
+
+.box-pending-failed {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.box-pending-failed .box-ring rect {
+  stroke: var(--danger);
+  stroke-dasharray: none;
+  animation: none;
+}
+
+.box-pending-cancelling {
+  opacity: 0.5;
+}
+
+.box-focus {
+  color: var(--text);
+}
+
+.box-focus .box-ring rect {
+  stroke-width: 2;
+}
+
+.box-open .box-ring rect {
+  stroke: var(--select);
+}
+
+.box-glyph {
+  margin-right: 3.2px;
+  font-weight: 700;
+  color: var(--danger);
+}
+
+/* "Esc again to cancel" under an armed box. */
+.box-hint {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  z-index: 1;
+  transform: translate(-50%, 3.2px);
+  padding: 1px 4.8px;
+  border-radius: var(--radius);
+  background: var(--text);
+  color: var(--bg);
+  font-size: 9.6px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 .react-flow__node.dragging .box {
   box-shadow: var(--shadow-drag);
   opacity: 0.92;
@@ -189,6 +281,22 @@
 .react-flow__edge.edge-ghost .react-flow__edge-path {
   stroke: var(--accent-line);
   stroke-dasharray: 3 3;
+}
+
+.react-flow__edge.edge-pending .react-flow__edge-path {
+  stroke: var(--accent-line);
+  stroke-dasharray: 3 3;
+}
+
+.react-flow__edge.edge-failed .react-flow__edge-path {
+  stroke: var(--danger-line);
+  stroke-dasharray: 3 3;
+}
+
+.graph-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4.8px;
 }
 
 .react-flow__controls {
@@ -250,13 +358,9 @@
   }
 }
 
-@keyframes box-busy {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 var(--drop-ring);
-  }
-  50% {
-    box-shadow: 0 0 0 4px var(--drop-ring);
+@keyframes box-march {
+  to {
+    stroke-dashoffset: -7;
   }
 }
 
@@ -269,7 +373,7 @@
 @media (prefers-reduced-motion: reduce) {
   .box,
   .box-current,
-  .box-current.box-busy,
+  .box-ring rect,
   .react-flow__edge-path,
   .react-flow__edge.animated path {
     animation: none;

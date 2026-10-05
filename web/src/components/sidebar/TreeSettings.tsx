@@ -4,10 +4,12 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
 import { dropTreeCaches, keys, moveTreeCaches } from '../../api/queries';
 import type { TreeDetail } from '../../api/types';
+import { treeBusyDetailsOf } from '../../lib/blockers';
 import { describeError } from '../../lib/chat-errors';
 import { MAX_NAME_LENGTH, type TreePatch, treePatchOf } from '../../lib/rename';
 import { safeSession } from '../../lib/storage';
 import { renameHistoryKey } from '../../lib/undo-history';
+import { useShowBlockers } from '../graph/blockers-context';
 import { Button } from '../ui/Button';
 import { ErrorNote } from '../ui/ErrorNote';
 
@@ -18,8 +20,9 @@ interface TreeSettingsProps {
 }
 
 export function TreeSettings({ tree, onRenamed }: TreeSettingsProps) {
-  const { t } = useTranslation('sidebar');
+  const { t } = useTranslation(['sidebar', 'graph']);
   const queryClient = useQueryClient();
+  const showBlockers = useShowBlockers();
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState(tree.title);
   const [instructions, setInstructions] = useState(tree.instructions);
@@ -49,7 +52,17 @@ export function TreeSettings({ tree, onRenamed }: TreeSettingsProps) {
       void queryClient.invalidateQueries({ queryKey: keys.trees });
       setTimeout(() => dropTreeCaches(queryClient, oldId), 0);
     },
+    // A title rename takes the tree's exclusive lock: running answers block it.
+    onError: (error, next) => {
+      if (!treeBusyDetailsOf(error)) return;
+      showBlockers({
+        tree: tree.id,
+        error,
+        retry: { label: t('graph:blockers.retry.renameTree'), run: () => save.mutate(next) },
+      });
+    },
   });
+  const saveError = treeBusyDetailsOf(save.error) ? null : save.error;
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -95,7 +108,7 @@ export function TreeSettings({ tree, onRenamed }: TreeSettingsProps) {
             />
             <span className="field-hint">{t('settings.instructionsHint')}</span>
           </label>
-          <ErrorNote error={save.error} message={describeError(save.error).message} />
+          <ErrorNote error={saveError} message={describeError(saveError).message} />
           <div className="row">
             <Button type="submit" size="sm" variant="primary" disabled={!dirty || save.isPending}>
               {save.isPending ? t('settings.saving') : t('settings.save')}

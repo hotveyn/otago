@@ -15,6 +15,8 @@ interface ExchangeProps {
   current?: boolean;
   streaming?: boolean;
   footer?: ReactNode;
+  /** Shown instead of "No answer." when the answer is empty and not streaming. */
+  emptyAnswer?: ReactNode;
 }
 
 export function Exchange({
@@ -26,6 +28,7 @@ export function Exchange({
   current,
   streaming,
   footer,
+  emptyAnswer,
 }: ExchangeProps) {
   const { t } = useTranslation('chat');
   return (
@@ -39,7 +42,9 @@ export function Exchange({
         <AttachmentScope.Provider value={attachments}>
           {answer ? (
             <Markdown text={answer} streaming={streaming} />
-          ) : streaming ? null : (
+          ) : streaming ? null : emptyAnswer !== undefined ? (
+            emptyAnswer
+          ) : (
             <p className="muted">{t('noAnswer')}</p>
           )}
           <AttachmentList />

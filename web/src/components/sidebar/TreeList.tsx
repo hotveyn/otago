@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
 import { keys } from '../../api/queries';
 import type { TreeMeta } from '../../api/types';
+import { useTreeCounts } from '../../lib/question-store';
 import { Button } from '../ui/Button';
 import { ErrorNote } from '../ui/ErrorNote';
 
@@ -19,6 +20,8 @@ export function TreeList({ trees, error, currentId, onSelect }: TreeListProps) {
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState('');
+  // Answers keep running in other trees: a badge makes them discoverable.
+  const counts = useTreeCounts();
   const create = useMutation({
     mutationFn: (value: string) => api.createTree({ title: value }),
     onSuccess: async (tree) => {
@@ -49,18 +52,38 @@ export function TreeList({ trees, error, currentId, onSelect }: TreeListProps) {
         <p className="muted small">{t('trees.empty')}</p>
       )}
       <ul className="list">
-        {trees.map((tree) => (
-          <li key={tree.id}>
-            <button
-              type="button"
-              className={tree.id === currentId ? 'list-item active' : 'list-item'}
-              onClick={() => onSelect(tree.id)}
-              title={tree.id}
-            >
-              {tree.title}
-            </button>
-          </li>
-        ))}
+        {trees.map((tree) => {
+          const running = counts[tree.id]?.running ?? 0;
+          const failed = counts[tree.id]?.failed ?? 0;
+          return (
+            <li key={tree.id}>
+              <button
+                type="button"
+                className={tree.id === currentId ? 'list-item active' : 'list-item'}
+                onClick={() => onSelect(tree.id)}
+                title={tree.id}
+              >
+                <span className="list-item-label truncate">{tree.title}</span>
+                {running > 0 && (
+                  <span className="tree-badge" title={t('trees.running', { count: running })}>
+                    <span aria-hidden="true">{running}</span>
+                    <span className="visually-hidden">
+                      {t('trees.running', { count: running })}
+                    </span>
+                  </span>
+                )}
+                {failed > 0 && (
+                  <span
+                    className="tree-failed"
+                    title={t('trees.failed', { count: failed })}
+                    role="img"
+                    aria-label={t('trees.failed', { count: failed })}
+                  />
+                )}
+              </button>
+            </li>
+          );
+        })}
       </ul>
       {creating && (
         <form className="stack" onSubmit={submit}>

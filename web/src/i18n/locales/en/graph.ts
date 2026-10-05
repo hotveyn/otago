@@ -7,7 +7,48 @@ export const graph = {
   clear: 'Clear',
   rename: 'Rename',
   hint: 'Click to open · Shift/⌘-click to select · drag onto a node to move · Ctrl/⌘+Z to undo',
-  busy: 'Answering… changes are paused',
+  busyCount_one: '{{count}} answering · changes paused',
+  busyCount_other: '{{count}} answering · changes paused',
+  showBlockers: 'Show…',
+  reconnecting: 'Reconnecting…',
+  pending: {
+    sending: 'Sending…',
+    uploading: 'Uploading files…',
+    streaming: 'Answering…',
+    naming: 'Saving…',
+    done: 'Saved',
+    failed: 'Failed: {{message}}',
+    cancelling: 'Cancelling…',
+    escAgain: 'Esc again to cancel',
+    hint: 'Click to open · Esc twice to cancel',
+  },
+  blockers: {
+    title: 'Answers in progress',
+    body_one:
+      '{{count}} answer is running in this tree. Moving, renaming and deleting nodes waits until it finishes.',
+    body_other:
+      '{{count}} answers are running in this tree. Moving, renaming and deleting nodes waits until they finish.',
+    preparing_one:
+      '{{count}} more request is being prepared (files uploading or a retry starting).',
+    preparing_other:
+      '{{count}} more requests are being prepared (files uploading or retries starting).',
+    uploading_one: '{{count}} message from this tab is still uploading.',
+    uploading_other: '{{count}} messages from this tab are still uploading.',
+    none: 'Nothing is running now.',
+    under: 'under <code>{{parent}}</code>',
+    aside: 'aside',
+    open: 'Open',
+    cancel: 'Cancel',
+    cancelAll: 'Cancel all',
+    saving: 'Saving… (finishes by itself)',
+    retry: {
+      move: 'Move now',
+      delete: 'Delete now',
+      rename: 'Rename now',
+      undo: 'Undo now',
+      renameTree: 'Save now',
+    },
+  },
   delete: {
     title_one: 'Delete node',
     title_other: 'Delete {{count}} nodes',
@@ -35,7 +76,7 @@ export const graph = {
     label: 'Name',
     confirm: 'Rename',
     saving: 'Renaming…',
-    hint: 'The name becomes the folder name (lowercase, dashes). If a sibling already has it, "-2" is added. Ids of this node and its descendants change.',
+    hint: 'Letters of any language, digits and dashes; lowercased; long names are shortened. If a sibling already has the name, "-2" is added. Ids of this node and its descendants change.',
   },
   undo: {
     stale: "Can't undo: the tree changed since then.",

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { InvalidInputError } from '../errors.js';
+import { isNodeName, nameKey } from './node-names.js';
 
 export const TREE_FILE = 'tree.md';
 export const NODE_FILE = 'node.md';
@@ -23,19 +24,29 @@ export const RESERVED_ROOT_NAMES: ReadonlySet<string> = new Set([
   USER_FILES_DIR,
 ]);
 
-/** Reserved child names under `parentId` (`""` = tree root). */
+/** Reserved child names under `parentId` (`""` = tree root). Compare with `nameKey`. */
 export function reservedNamesFor(parentId: string): ReadonlySet<string> {
   return parentId === '' ? RESERVED_ROOT_NAMES : RESERVED_NODE_NAMES;
 }
 
-const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-
-export function isSlug(value: string): boolean {
-  return SLUG_RE.test(value);
+/** True when `name` folds (`nameKey`) to a reserved child name under `parentId`. */
+export function isReservedName(parentId: string, name: string): boolean {
+  return reservedNamesFor(parentId).has(nameKey(name));
 }
 
-/** Lowercase kebab-case, ASCII only. Returns `fallback` when nothing is left. */
-export function toKebabCase(input: string, fallback = 'node', maxLength = 60): string {
+/** Tree ids (tree folder names) stay ASCII kebab-case. Node names are Unicode (`node-names.ts`). */
+const TREE_ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/** True for a valid tree id (ASCII kebab-case). Not for node names: use `isNodeName`. */
+export function isTreeId(value: string): boolean {
+  return TREE_ID_RE.test(value);
+}
+
+/**
+ * Tree id from a title: lowercase kebab-case, ASCII only. Returns `fallback` when nothing is
+ * left. Tree ids only; node names use `toNodeName`.
+ */
+export function toTreeId(input: string, fallback = 'tree', maxLength = 60): string {
   const slug = input
     .normalize('NFKD')
     .replace(/[̀-ͯ]/g, '')
@@ -58,24 +69,26 @@ export function resolveInside(base: string, ...segments: string[]): string {
 }
 
 export function treeDirOf(treesDir: string, treeId: string): string {
-  if (!isSlug(treeId)) throw new InvalidInputError(`Invalid tree id: ${treeId}`);
+  if (!isTreeId(treeId)) throw new InvalidInputError(`Invalid tree id: ${treeId}`);
   return resolveInside(treesDir, treeId);
 }
 
-/** Validate a node id (`""` = root) and return its segments. */
+/**
+ * Validate a node id (`""` = root) and return its segments. Every segment must be an NFC node
+ * name (`isNodeName`) and not reserved at its level; NFD input fails here (routes normalize
+ * ids to NFC first).
+ */
 export function nodeIdSegments(id: string): string[] {
   if (id === '') return [];
   if (path.isAbsolute(id) || id.includes('\\')) {
     throw new InvalidInputError(`Invalid node id: ${id}`);
   }
   const segments = id.split('/');
-  for (const segment of segments) {
-    if (!isSlug(segment) || RESERVED_NODE_NAMES.has(segment)) {
+  for (const [index, segment] of segments.entries()) {
+    const parentId = segments.slice(0, index).join('/');
+    if (!isNodeName(segment) || isReservedName(parentId, segment)) {
       throw new InvalidInputError(`Invalid node id: ${id}`);
     }
-  }
-  if (RESERVED_ROOT_NAMES.has(segments[0] ?? '')) {
-    throw new InvalidInputError(`Invalid node id: ${id}`);
   }
   return segments;
 }
@@ -103,17 +116,21 @@ export function isSameOrDescendant(id: string, ancestorId: string): boolean {
 export const DELETED_MARKER = '.deleted-';
 
 /**
- * Soft-deleted folder name (one segment): `<name>.deleted-<epochMs>[-<n>]`.
- * The `.` makes it a non-slug, so it never collides with a live node name.
+ * Soft-deleted folder name (one segment): `<name>.deleted-<epochMs>[-<n>]`, `name` a Unicode
+ * node name. The `.` makes it a non-name, so it never collides with a live node name.
+ * The regex alone does not enforce NFC/lowercase (`A.deleted-…` matches it): use
+ * `isDeletedName` / `parseTrashId`, which also require `isNodeName(name)`.
+ * `\d` stays ASCII under the `u` flag.
  */
 export const DELETED_NAME_RE =
-  /^(?<name>[a-z0-9]+(?:-[a-z0-9]+)*)\.deleted-(?<ts>\d{13,})(?:-(?<n>[2-9]|[1-9]\d+))?$/;
+  /^(?<name>[\p{L}\p{Nd}][\p{L}\p{M}\p{Nd}]*(?:-[\p{L}\p{Nd}][\p{L}\p{M}\p{Nd}]*)*)\.deleted-(?<ts>\d{13,})(?:-(?<n>[2-9]|[1-9]\d+))?$/u;
 
 /** Glob that matches any path inside a soft-deleted folder (agent deny rules). */
 export const DELETED_PATH_GLOB = '**/*.deleted-*/**';
 
 export function isDeletedName(name: string): boolean {
-  return DELETED_NAME_RE.test(name);
+  const original = DELETED_NAME_RE.exec(name)?.groups?.name;
+  return original !== undefined && isNodeName(original);
 }
 
 /** Trash folder name for `name`; `counter >= 2` adds the disambiguation suffix. */
@@ -128,7 +145,7 @@ export interface ParsedTrashId {
   parentId: string;
   /** Deleted folder name, e.g. `borrowing-rules.deleted-1759000000000`. */
   folder: string;
-  /** Original slug, the desired name on restore. */
+  /** Original node name, the desired name on restore. */
   originalName: string;
   /** Deletion time, epoch ms. */
   deletedAt: number;
@@ -149,7 +166,7 @@ export function parseTrashId(trashId: string): ParsedTrashId {
     throw new InvalidInputError(`Invalid trash id: ${trashId}`);
   }
   const originalName = match.groups.name ?? '';
-  if (reservedNamesFor(parentId).has(originalName)) {
+  if (!isNodeName(originalName) || isReservedName(parentId, originalName)) {
     throw new InvalidInputError(`Invalid trash id: ${trashId}`);
   }
   return { parentId, folder, originalName, deletedAt: Number(match.groups.ts) };

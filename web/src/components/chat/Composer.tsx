@@ -20,6 +20,7 @@ import {
   type RejectedFile,
 } from '../../lib/chat-files';
 import { Button } from '../ui/Button';
+import { IdPath } from '../ui/IdPath';
 import { ComposerFiles } from './ComposerFiles';
 
 export interface ModelChoice {
@@ -37,8 +38,14 @@ interface ComposerProps {
   value: string;
   onChange: (value: string) => void;
   onSend: () => void;
-  onStop: () => void;
-  streaming: boolean;
+  /** Shown instead of Send while locked (cancels the panel's running question or send). */
+  onCancel?: () => void;
+  /** The panel shows a question in flight (or failed): nothing can be sent. */
+  locked: boolean;
+  /** Label of the disabled button while locked without `onCancel`. */
+  lockedStatus?: 'saving' | 'cancelling' | null;
+  /** Target line: where the next message goes, or why nothing can be sent now. */
+  targetNote?: 'waiting' | 'failed' | null;
   target: string;
   models: ModelChoice;
   onModelsChange: (models: ModelChoice) => void;
@@ -48,7 +55,7 @@ interface ComposerProps {
   onAddFiles: (files: File[]) => void;
   onRemoveFile: (id: number) => void;
   onDismissFileErrors: () => void;
-  /** Text or files present and nothing streaming. */
+  /** Text or files present and not locked. */
   canSend: boolean;
 }
 
@@ -59,8 +66,10 @@ export function Composer({
   value,
   onChange,
   onSend,
-  onStop,
-  streaming,
+  onCancel,
+  locked,
+  lockedStatus = null,
+  targetNote = null,
   target,
   models,
   onModelsChange,
@@ -91,17 +100,17 @@ export function Composer({
     [],
   );
 
-  // Runs after the new value is committed; a disabled (streaming) textarea waits for the end.
+  // Runs after the new value is committed; a disabled (locked) textarea waits for the unlock.
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-check whenever the text changes
   useLayoutEffect(() => {
     const element = textarea.current;
-    if (!wantEnd.current || streaming || !element) return;
+    if (!wantEnd.current || locked || !element) return;
     element.focus();
     const end = element.value.length;
     element.setSelectionRange(end, end);
     element.scrollTop = element.scrollHeight;
     wantEnd.current = false;
-  }, [value, streaming]);
+  }, [value, locked]);
 
   // Grow with the content up to the CSS max-height.
   // biome-ignore lint/correctness/useExhaustiveDependencies: resize whenever the text changes
@@ -113,8 +122,8 @@ export function Composer({
   }, [value]);
 
   useEffect(() => {
-    if (!streaming) textarea.current?.focus();
-  }, [streaming]);
+    if (!locked) textarea.current?.focus();
+  }, [locked]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -143,15 +152,15 @@ export function Composer({
   const onDragOver = (event: DragEvent) => {
     if (!hasFiles(event)) return;
     event.preventDefault();
-    event.dataTransfer.dropEffect = streaming ? 'none' : 'copy';
+    event.dataTransfer.dropEffect = locked ? 'none' : 'copy';
   };
   const onDrop = (event: DragEvent) => {
     if (!hasFiles(event)) return;
     event.preventDefault();
     dragDepth.current = 0;
     setDragging(false);
-    // No queuing: files dropped while an answer streams are ignored.
-    if (!streaming) onAddFiles(Array.from(event.dataTransfer.files));
+    // No queuing: files dropped while the panel is locked are ignored.
+    if (!locked) onAddFiles(Array.from(event.dataTransfer.files));
   };
 
   const defaults = available.data?.defaults;
@@ -167,12 +176,21 @@ export function Composer({
       onDrop={onDrop}
     >
       <div className="composer-target muted small">
-        {target ? (
+        {targetNote === 'failed' ? (
+          t('composer.failedFocus')
+        ) : targetNote === 'waiting' ? (
+          <Trans
+            t={t}
+            i18nKey="composer.waitingFor"
+            values={{ target }}
+            components={{ code: <IdPath id={target} /> }}
+          />
+        ) : target ? (
           <Trans
             t={t}
             i18nKey="composer.replyUnder"
             values={{ target }}
-            components={{ code: <code /> }}
+            components={{ code: <IdPath id={target} /> }}
           />
         ) : (
           t('composer.newBranch')
@@ -184,17 +202,17 @@ export function Composer({
         onRemove={onRemoveFile}
         onDismissErrors={onDismissFileErrors}
         fallbackFocus={textarea}
-        disabled={streaming}
+        disabled={locked}
       />
       <textarea
         ref={textarea}
         className="composer-input"
-        placeholder={streaming ? t('composer.waiting') : t('composer.placeholder')}
+        placeholder={locked ? t('composer.waiting') : t('composer.placeholder')}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
-        disabled={streaming}
+        disabled={locked}
         rows={2}
         aria-describedby={hintId}
       />
@@ -209,7 +227,7 @@ export function Composer({
           title={
             full ? t('composer.attachLimit', { max: MAX_MESSAGE_FILES }) : t('composer.attachFiles')
           }
-          disabled={streaming || full}
+          disabled={locked || full}
           onClick={() => picker.current?.click()}
         >
           {t('composer.attach')}
@@ -232,7 +250,7 @@ export function Composer({
           <select
             value={models.model ?? ''}
             onChange={(event) => onModelsChange({ ...models, model: event.target.value || null })}
-            disabled={streaming || options.length === 0}
+            disabled={locked || options.length === 0}
           >
             <option value="">
               {defaults
@@ -253,7 +271,7 @@ export function Composer({
             onChange={(event) =>
               onModelsChange({ ...models, namingModel: event.target.value || null })
             }
-            disabled={streaming || options.length === 0}
+            disabled={locked || options.length === 0}
           >
             <option value="">
               {defaults
@@ -268,9 +286,13 @@ export function Composer({
           </select>
         </label>
         <span className="spacer" />
-        {streaming ? (
-          <Button variant="default" onClick={onStop}>
-            {t('composer.stop')}
+        {locked && onCancel ? (
+          <Button variant="default" onClick={onCancel}>
+            {t('composer.cancel')}
+          </Button>
+        ) : locked && lockedStatus ? (
+          <Button variant="default" disabled>
+            {lockedStatus === 'saving' ? t('composer.saving') : t('inFlight.cancelling')}
           </Button>
         ) : (
           <Button variant="primary" onClick={onSend} disabled={!canSend}>
