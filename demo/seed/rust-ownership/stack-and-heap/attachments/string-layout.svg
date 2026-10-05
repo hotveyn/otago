@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 220" font-family="Georgia, serif" font-size="14">
+  <title>A String: pointer, length and capacity on the stack; the bytes "hello" on the heap</title>
+  <rect width="520" height="220" fill="#fbfaf6"/>
+  <text x="30" y="30" font-weight="bold" fill="#22201c">Stack: s</text>
+  <rect x="30" y="45" width="180" height="40" fill="#e8eef6" stroke="#2c4f7c"/>
+  <text x="42" y="70" fill="#22201c">ptr</text>
+  <rect x="30" y="85" width="180" height="40" fill="#ffffff" stroke="#2c4f7c"/>
+  <text x="42" y="110" fill="#22201c">len = 5</text>
+  <rect x="30" y="125" width="180" height="40" fill="#ffffff" stroke="#2c4f7c"/>
+  <text x="42" y="150" fill="#22201c">capacity = 5</text>
+  <text x="300" y="30" font-weight="bold" fill="#22201c">Heap</text>
+  <g stroke="#8a5a12" fill="#fbf1dc">
+    <rect x="300" y="45" width="40" height="40"/>
+    <rect x="340" y="45" width="40" height="40"/>
+    <rect x="380" y="45" width="40" height="40"/>
+    <rect x="420" y="45" width="40" height="40"/>
+    <rect x="460" y="45" width="40" height="40"/>
+  </g>
+  <g fill="#22201c" text-anchor="middle">
+    <text x="320" y="70">h</text>
+    <text x="360" y="70">e</text>
+    <text x="400" y="70">l</text>
+    <text x="440" y="70">l</text>
+    <text x="480" y="70">o</text>
+  </g>
+  <path d="M200 65 C 250 65, 250 65, 296 65" stroke="#2c4f7c" stroke-width="2" fill="none"/>
+  <path d="M288 59 L298 65 L288 71 Z" fill="#2c4f7c"/>
+  <text x="30" y="200" fill="#837d70">let s = String::from("hello");</text>
+</svg>

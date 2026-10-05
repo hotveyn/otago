@@ -1,0 +1,37 @@
+/* Demo badge; colors come from web/src/styles/themes.css tokens. */
+.demo-banner {
+  position: fixed;
+  bottom: 12px;
+  left: 12px;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 3px 3px 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: var(--shadow-drag);
+  color: var(--text-soft);
+  font-size: 12px;
+  cursor: default;
+}
+
+.demo-banner-label {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.demo-banner-note {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.demo-banner .btn {
+  border-radius: 999px;
+}

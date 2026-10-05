@@ -1,6 +1,7 @@
 packages:
   - server
   - web
+  - demo
 
 onlyBuiltDependencies:
   - esbuild

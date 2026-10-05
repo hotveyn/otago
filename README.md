@@ -21,12 +21,16 @@ and keep everything as plain Markdown files you can commit to git.
 ## ✨ Features
 
 - **Branching chats.** Each question and answer is a node. Ask a follow-up from any node to start a new branch.
+- **Parallel questions.** Ask several questions at once, in one tree or many. Each one shows up as a pending node in the graph while Claude answers. Answers keep running in the background: reload the page or close the tab and come back later, the answer continues and the node appears when it is done. Cancel a running question, or retry a failed one (its attached files are kept).
+- **Pending nodes.** Every question in flight is a box with a marching dashed outline under its node, titled with the question. Click it (or focus it and press Enter) to open its chat with the live answer; press Esc twice on a running box to cancel it. A failed answer turns red: open it to **Retry** (same text and files) or **Dismiss**. While answers run, structural edits are paused: the graph toolbar shows "N answering · Show…", which lists the running answers with **Open** / **Cancel** / **Cancel all**; a refused move, delete, rename, undo or tree rename offers to run again once nothing blocks it. The tree list shows a badge for trees with running answers and a red dot for failed ones.
+- **Several asides.** Opening a new aside sends the previous one to the background; it keeps answering and is reopened from its pending box.
 - **Graph view.** Pan, zoom and click around the tree. Drag a node onto another node to move it.
 - **Answers from your sources.** Upload `.md`, `.txt`, `.pdf` or e-books (`.epub`, `.fb2`, `.mobi`, `.azw3`, …). Claude searches them first and cites file and line numbers. It uses web search only when your sources don't cover the question.
 - **Tree instructions.** Give each tree its own rules, e.g. *"Answer in Russian. Compare with C++."*
+- **Names in your language.** A new node is named after the question *and* the answer, in the answer's language (`правила-заимствования`, `regeln-der-ausleihe`). Folder names may contain letters of any script; tree folder names stay ASCII.
 - **Attachments.** Claude can save files (images, SVG, tables, PDFs) to a node. You can preview them in the chat.
 - **Node management.** Select one or many nodes, then delete them or move them together with their subtrees. Deletion is soft: the folder is renamed in place to `<name>.deleted-<timestamp>` and can be restored. Trash folders are hidden from the tree and the agent (permission deny rule, a tool hook and a prompt rule); they accumulate and can be removed by hand. Residual risk: an unscoped agent Grep over the whole tree may still print matches from trash folders if the SDK does not apply the deny rule to Grep output.
-- **Undo.** Press Ctrl+Z (Cmd+Z on macOS) in the graph to undo the last move or delete. History is per tree, kept in the browser tab (sessionStorage, last 50 actions). No redo. Text fields keep their normal undo.
+- **Undo.** Press Ctrl+Z (Cmd+Z on macOS) in the graph to undo the last move or delete. History is per tree, kept in the browser tab (sessionStorage, last 50 actions). No redo. Text fields keep their normal undo. While answers are running, undo opens the list of running answers instead.
 - **Model picker.** Choose the answer model per request (Opus, Sonnet, Fable, Haiku).
 - **Themes.** Standard, Dark and Cool light.
 - **Plain files only.** No database. The `trees/` folder is the whole state, so git is your backup.
@@ -61,13 +65,13 @@ flowchart LR
     A -. "Read · Grep · Glob<br/>WebSearch · WebFetch" .-> F
 ```
 
-When you send a message at node `N`:
+When you ask a question at node `N`:
 
 1. The server reads the chain `root → … → N` from disk.
 2. It builds the prompt: system prompt + tree instructions + the chain + your message.
 3. The Agent SDK runs inside the tree folder. It can read files but can't write them.
-4. The answer streams to the browser over SSE.
-5. On success, the server writes a new child node atomically. Haiku gives it a short kebab-case name.
+4. The server registers the question and replies `202` right away. The answer streams to every open tab over one app-wide event stream (`GET /api/questions/events`, SSE); a reconnecting tab gets a snapshot of everything in flight.
+5. When the answer is complete, Haiku names the node from the question and the answer, in the answer's language. The server then writes the new child node atomically. A failed answer writes nothing.
 
 Every request rebuilds context from files. You control context by shaping the tree: move or delete nodes.
 
@@ -125,8 +129,9 @@ Run from the repo root:
 | Command | What it does |
 |---|---|
 | `pnpm dev` | Start server and web in watch mode |
-| `pnpm build` | Build both packages |
-| `pnpm test` | Run Vitest in both packages |
+| `pnpm demo` | Start the browser-only demo (`127.0.0.1:5174`) |
+| `pnpm build` | Build all packages (server, web, demo) |
+| `pnpm test` | Run Vitest in all packages |
 | `pnpm lint` | Biome check + `tsc --noEmit` |
 | `pnpm format` | Format with Biome |
 | `pnpm check` | Biome check with auto-fix |
@@ -137,11 +142,34 @@ Ask a question from the terminal without the UI (writes nothing to the tree):
 pnpm --filter @otago/server ask <tree> "What is borrowing?" [parentNodeId]
 ```
 
+## 🎪 Demo
+
+`demo/` is the same UI as `web/`, built as a static site with no server and no Claude. Its
+mock backend runs in the browser:
+
+- A virtual file system holds the trees in the real on-disk format (`tree.md`, `node.md`,
+  `sources/`, `attachments/`, `files/`) and is saved to `localStorage`.
+- Questions stream simulated Lorem ipsum answers and become nodes, like real ones. A question
+  with the word `fail` fails once, so you can try Retry.
+- First visit opens the seed tree from `demo/seed/`. **Reset** in the bottom-left badge brings
+  it back.
+- Files are limited to 512 KB each (`localStorage` holds about 5 MB). E-books are not supported.
+
+```bash
+pnpm demo                                   # dev server on 127.0.0.1:5174
+pnpm --filter @otago/demo build             # static site in demo/dist
+```
+
+To deploy on Vercel, create a project with **Root Directory** `demo`; `demo/vercel.json` has
+the build settings. Keep "Include files outside the root directory" on (the default): the demo
+imports `web/src` and `server/src/storage/node-names.ts`.
+
 ## 🗂 Project layout
 
 ```
 server/   Fastify API, storage layer, agent runner, e-book extraction
 web/      React SPA: sidebar, graph, chat, source & attachment viewers
+demo/     The web UI with an in-browser mock backend, for static hosting
 docs/     Design doc and backend stack
 tasks/    v1 implementation tasks
 ```
@@ -156,4 +184,5 @@ tasks/    v1 implementation tasks
 
 - Runs **locally only** and binds to `127.0.0.1`. No auth and no multi-user support.
 - The agent can use only `Read`, `Grep`, `Glob`, `WebSearch`, `WebFetch` and the `save_attachment` tool. Only the server writes files.
-- Deleting a node is permanent. Commit `trees/` to git if you want history.
+- Deleting a node is soft (see Node management) and can be undone. Commit `trees/` to git if you want history.
+- Questions in flight live in server memory only: restarting the server loses running and failed questions (nothing half-written stays in `trees/`).

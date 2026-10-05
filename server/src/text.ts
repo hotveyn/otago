@@ -18,9 +18,12 @@ export function truncateGraphemes(s: string, max: number, ellipsis = ''): string
   return ellipsis ? `${kept.trimEnd()}${ellipsis}` : kept;
 }
 
+// TextEncoder instead of Buffer: node-names.ts (which uses this) is also bundled by demo/.
+const utf8Encoder = new TextEncoder();
+
 /** Length of `s` in UTF-8 bytes. */
 export function utf8Length(s: string): number {
-  return Buffer.byteLength(s, 'utf8');
+  return utf8Encoder.encode(s).length;
 }
 
 /** First non-empty line of `s`, trimmed (`""` when there is none). */

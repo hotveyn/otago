@@ -1,0 +1,4 @@
+Reference,Syntax,Can read,Can write,How many at once,Alongside other references
+Shared,&T,yes,no,any number,only other shared references
+Mutable,&mut T,yes,yes,exactly one,none
+Owner (while borrowed),x,yes,only if no borrows,1,must outlive every borrow
