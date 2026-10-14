@@ -1,0 +1,31 @@
+{
+  "slug": "tree-undo",
+  "title": "Tree undo (Ctrl+Z)",
+  "created": "2026-09-26T09:41:29Z",
+  "workspace_root": "/Users/ioannshestopalov/Programming/otago",
+  "contracts": {
+    "owner": "server",
+    "generated": true,
+    "path": ".claude/features/archive/28-09-2026/tree-undo/contracts"
+  },
+  "projects": [
+    {
+      "name": "server",
+      "root": "server",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "server",
+      "stage": "implemented"
+    },
+    {
+      "name": "web",
+      "root": "web",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "client",
+      "stage": "implemented"
+    }
+  ],
+  "archived": "2026-09-28T07:22:31Z",
+  "archived_to": ".claude/features/archive/28-09-2026/tree-undo"
+}

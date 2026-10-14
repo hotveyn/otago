@@ -1,0 +1,31 @@
+{
+  "slug": "parallel-questions",
+  "title": "Parallel questions with pending nodes",
+  "created": "2026-10-04T09:44:18Z",
+  "workspace_root": "/Users/ioannshestopalov/Programming/otago",
+  "contracts": {
+    "owner": "server",
+    "generated": true,
+    "path": ".claude/features/archive/05-10-2026/parallel-questions/contracts"
+  },
+  "projects": [
+    {
+      "name": "server",
+      "root": "server",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "server",
+      "stage": "implemented"
+    },
+    {
+      "name": "web",
+      "root": "web",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "client",
+      "stage": "implemented"
+    }
+  ],
+  "archived": "2026-10-05T12:03:04Z",
+  "archived_to": ".claude/features/archive/05-10-2026/parallel-questions"
+}

@@ -1,0 +1,37 @@
+{
+  "slug": "voice-input",
+  "title": "Voice input (dictation into the composer)",
+  "created": "2026-10-08T20:29:53Z",
+  "workspace_root": "/Users/ioannshestopalov/Programming/otago",
+  "contracts": {
+    "owner": "server",
+    "generated": true,
+    "path": ".claude/features/voice-input/contracts"
+  },
+  "projects": [
+    {
+      "name": "server",
+      "root": "server",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "server",
+      "stage": "planned"
+    },
+    {
+      "name": "web",
+      "root": "web",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "client",
+      "stage": "planned"
+    },
+    {
+      "name": "demo",
+      "root": "demo",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "client",
+      "stage": "planned"
+    }
+  ]
+}
