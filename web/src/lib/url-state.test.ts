@@ -30,32 +30,34 @@ const url = (partial: Partial<UrlState> = {}): UrlState => ({
 describe('url state', () => {
   it('round-trips tree and node', () => {
     const search = writeUrlState(url({ tree: 'rust-basics', node: 'ownership/borrowing' }));
-    expect(search).toBe('?tree=rust-basics&node=ownership/borrowing');
+    expect(search).toBe('/rust-basics/ownership/borrowing');
     expect(readUrlState(search)).toEqual(url({ tree: 'rust-basics', node: 'ownership/borrowing' }));
   });
 
   it('drops the node without a tree and defaults to root', () => {
-    expect(writeUrlState(url({ tree: null, node: 'x' }))).toBe('');
-    expect(readUrlState('?tree=a')).toEqual(url({ tree: 'a' }));
+    expect(writeUrlState(url({ tree: null, node: 'x' }))).toBe('/');
+    expect(readUrlState('/a')).toEqual(url({ tree: 'a' }));
+    expect(readUrlState('/a/')).toEqual(url({ tree: 'a' }));
+    expect(readUrlState('/')).toEqual(url({ tree: null }));
     expect(readUrlState('')).toEqual(url({ tree: null }));
   });
 
   it('round-trips the main focus as q', () => {
     const state = url({ node: 'a/b', question: 'q-1' });
     const search = writeUrlState(state);
-    expect(search).toBe('?tree=t&node=a/b&q=q-1');
+    expect(search).toBe('/t/a/b?q=q-1');
     expect(readUrlState(search)).toEqual(state);
   });
 
   it('ignores q without a tree and an empty q', () => {
-    expect(readUrlState('?q=q-1').question).toBeNull();
-    expect(writeUrlState(url({ tree: null, question: 'q-1' }))).toBe('');
-    expect(readUrlState('?tree=t&q=').question).toBeNull();
+    expect(readUrlState('/?q=q-1').question).toBeNull();
+    expect(writeUrlState(url({ tree: null, question: 'q-1' }))).toBe('/');
+    expect(readUrlState('/t?q=').question).toBeNull();
   });
 
   it('writes tree, node, q, side, sideNode, sideQ in this order', () => {
     expect(writeUrlState(url({ node: 'a', question: 'm', side: side('a', 'a/b', 's') }))).toBe(
-      '?tree=t&node=a&q=m&side=a&sideNode=a/b&sideQ=s',
+      '/t/a?q=m&side=a&sideNode=a/b&sideQ=s',
     );
   });
 
@@ -63,10 +65,28 @@ describe('url state', () => {
     const nfc = 'основы/йод';
     const nfd = nfc.normalize('NFD');
     expect(nfd).not.toBe(nfc);
-    const params = new URLSearchParams({ tree: 't', node: nfd, side: nfd, sideNode: `${nfd}/ёж` });
-    const state = readUrlState(`?${params}`);
+    const params = new URLSearchParams({ side: nfd, sideNode: `${nfd}/ёж` });
+    const state = readUrlState(`/t/${encodeURI(nfd)}?${params}`);
     expect(state.node).toBe(nfc);
     expect(state.side).toEqual(side(nfc, `${nfc}/ёж`.normalize('NFC')));
+  });
+
+  it('percent-encodes path segments and decodes them back', () => {
+    const state = url({ tree: 'jit', node: 'jit-компиляция/hotspot-в-java' });
+    const written = writeUrlState(state);
+    expect(written).toBe(
+      '/jit/jit-%D0%BA%D0%BE%D0%BC%D0%BF%D0%B8%D0%BB%D1%8F%D1%86%D0%B8%D1%8F/hotspot-%D0%B2-java',
+    );
+    expect(readUrlState(written)).toEqual(state);
+    expect(readUrlState('/jit/jit-компиляция/hotspot-в-java')).toEqual(state);
+    expect(readUrlState('/jit//a/%E0/').node).toBe('a/%E0');
+  });
+
+  it('reads links from before the path form', () => {
+    expect(readUrlState('/?tree=t&node=a/b&q=q-1')).toEqual(url({ node: 'a/b', question: 'q-1' }));
+    expect(readUrlState('?tree=t&node=%D0%B9%D0%BE%D0%B4'.normalize('NFD')).node).toBe('йод');
+    expect(readUrlState('/x/y?tree=t&node=a').tree).toBe('x');
+    expect(readUrlState('/?tree=&node=a')).toEqual(url({ tree: null }));
   });
 
   it('round-trips Cyrillic ids with unescaped slashes', () => {
@@ -82,50 +102,50 @@ describe('side chat url state', () => {
   it('round-trips side and sideNode with unescaped slashes', () => {
     const state = url({ node: 'a/b', side: side('a/b', 'a/b/c/d') });
     const search = writeUrlState(state);
-    expect(search).toBe('?tree=t&node=a/b&side=a/b&sideNode=a/b/c/d');
+    expect(search).toBe('/t/a/b?side=a/b&sideNode=a/b/c/d');
     expect(readUrlState(search)).toEqual(state);
   });
 
   it('round-trips sideQ', () => {
     const state = url({ side: side('a', null, 's-1') });
-    expect(writeUrlState(state)).toBe('?tree=t&side=a&sideQ=s-1');
-    expect(readUrlState('?tree=t&side=a&sideQ=s-1')).toEqual(state);
+    expect(writeUrlState(state)).toBe('/t?side=a&sideQ=s-1');
+    expect(readUrlState('/t?side=a&sideQ=s-1')).toEqual(state);
   });
 
   it('ignores sideQ without a side', () => {
-    expect(readUrlState('?tree=t&sideQ=s-1').side).toBeNull();
+    expect(readUrlState('/t?sideQ=s-1').side).toBeNull();
   });
 
   it('writes side= for the root anchor', () => {
     const state = url({ side: side('') });
-    expect(writeUrlState(state)).toBe('?tree=t&side=');
-    expect(readUrlState('?tree=t&side=')).toEqual(state);
+    expect(writeUrlState(state)).toBe('/t?side=');
+    expect(readUrlState('/t?side=')).toEqual(state);
   });
 
   it('omits sideNode while unsent', () => {
-    expect(writeUrlState(url({ node: 'a', side: side('a') }))).toBe('?tree=t&node=a&side=a');
+    expect(writeUrlState(url({ node: 'a', side: side('a') }))).toBe('/t/a?side=a');
   });
 
   it('accepts any head under the root anchor', () => {
-    expect(readUrlState('?tree=t&side=&sideNode=x/y').side).toEqual(side('', 'x/y'));
+    expect(readUrlState('/t?side=&sideNode=x/y').side).toEqual(side('', 'x/y'));
   });
 
   it('drops a head outside the anchor subtree or equal to it', () => {
-    expect(readUrlState('?tree=t&side=a&sideNode=b/c').side).toEqual(side('a'));
-    expect(readUrlState('?tree=t&side=a&sideNode=ab').side).toEqual(side('a'));
-    expect(readUrlState('?tree=t&side=a&sideNode=a').side).toEqual(side('a'));
-    expect(readUrlState('?tree=t&side=a&sideNode=').side).toEqual(side('a'));
+    expect(readUrlState('/t?side=a&sideNode=b/c').side).toEqual(side('a'));
+    expect(readUrlState('/t?side=a&sideNode=ab').side).toEqual(side('a'));
+    expect(readUrlState('/t?side=a&sideNode=a').side).toEqual(side('a'));
+    expect(readUrlState('/t?side=a&sideNode=').side).toEqual(side('a'));
   });
 
   it('ignores side without a tree', () => {
-    expect(readUrlState('?side=a&sideNode=a/b')).toEqual(url({ tree: null }));
-    expect(writeUrlState(url({ tree: null, side: side('a') }))).toBe('');
+    expect(readUrlState('/?side=a&sideNode=a/b')).toEqual(url({ tree: null }));
+    expect(writeUrlState(url({ tree: null, side: side('a') }))).toBe('/');
   });
 
   it('reads only the first side entry', () => {
-    expect(
-      readUrlState('?tree=t&side=a&sideNode=a/b&sideQ=x&side=c&sideNode=c/d&sideQ=y').side,
-    ).toEqual(side('a', 'a/b', 'x'));
+    expect(readUrlState('/t?side=a&sideNode=a/b&sideQ=x&side=c&sideNode=c/d&sideQ=y').side).toEqual(
+      side('a', 'a/b', 'x'),
+    );
   });
 });
 
@@ -255,7 +275,7 @@ describe('tree rename', () => {
 
   it('round-trips through mergeUrlState and writeUrlState', () => {
     const merged = mergeUrlState(state, followTreeRename(state, 'rust-basics', 'rust'));
-    expect(writeUrlState(merged)).toBe('?tree=rust&node=a/b&q=q&side=a&sideNode=a/b&sideQ=s');
+    expect(writeUrlState(merged)).toBe('/rust/a/b?q=q&side=a&sideNode=a/b&sideQ=s');
   });
 });
 

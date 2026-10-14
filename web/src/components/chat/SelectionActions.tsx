@@ -7,8 +7,11 @@ import { isQuotable } from '../../lib/quote';
 export interface SelectionAction {
   id: string;
   label: string;
-  /** Receives the selection's visible text (Selection.toString()). */
-  run: (text: string) => void;
+  /**
+   * Receives the selection's visible text (Selection.toString()) and the id of the saved node
+   * the selection lies in (`null` when it spans several exchanges or an in-flight one).
+   */
+  run: (text: string, nodeId: string | null) => void;
 }
 
 interface SelectionActionsProps {
@@ -21,6 +24,7 @@ interface SelectionActionsProps {
 
 interface Shown {
   text: string;
+  nodeId: string | null;
   anchor: Box;
   bounds: Box;
 }
@@ -52,7 +56,16 @@ function readSelection(container: HTMLElement | null): Shown | null {
   const bounds = container.getBoundingClientRect();
   // The selection end is scrolled out of view.
   if (rect.bottom < bounds.top || rect.top > bounds.bottom) return null;
-  return { text, anchor: toBox(rect), bounds: toBox(bounds) };
+  return { text, nodeId: nodeIdOf(range, container), anchor: toBox(rect), bounds: toBox(bounds) };
+}
+
+/** The `data-node-id` of the single exchange holding the whole range, or null. */
+function nodeIdOf(range: Range, container: HTMLElement): string | null {
+  const start = range.commonAncestorContainer;
+  const element = start instanceof Element ? start : start.parentElement;
+  const exchange = element?.closest<HTMLElement>('[data-node-id]');
+  if (!exchange || !container.contains(exchange)) return null;
+  return exchange.dataset.nodeId ?? null;
 }
 
 /** A floating toolbar over a text selection inside `container`. */
@@ -176,7 +189,7 @@ export function SelectionActions({ container, actions, resetKey }: SelectionActi
           onMouseDown={(event) => event.preventDefault()}
           onPointerDown={(event) => event.preventDefault()}
           onClick={() => {
-            action.run(shown.text);
+            action.run(shown.text, shown.nodeId);
             document.getSelection()?.removeAllRanges();
             hide();
           }}

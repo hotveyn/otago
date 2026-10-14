@@ -108,14 +108,18 @@ export function openPendingTarget(key: string, state: QuestionsState): Partial<U
 }
 
 /**
- * "Ask aside" from the main chat: `'disabled'` while the main chat shows a question (it has no
- * node to anchor on); `null` to reuse the open aside on the same anchor with no question;
+ * "Ask aside" from the main chat on `anchor` (the node the text was selected in; the main chain
+ * shows ancestors of `url.node` too): `'disabled'` while the main chat shows a question (it has
+ * no node to anchor on); `null` to reuse the open aside on the same anchor with no question;
  * otherwise a new aside (the previous one keeps answering in the background).
  */
-export function askAsideTarget(url: UrlState): Partial<UrlState> | null | 'disabled' {
+export function askAsideTarget(
+  url: UrlState,
+  anchor: string = url.node,
+): Partial<UrlState> | null | 'disabled' {
   if (url.question !== null) return 'disabled';
-  if (url.side && url.side.anchor === url.node && url.side.question === null) return null;
-  return openSide(url, url.node);
+  if (url.side && url.side.anchor === anchor && url.side.question === null) return null;
+  return openSide(url, anchor);
 }
 
 /** Which panel of this tab shows question `id`. */

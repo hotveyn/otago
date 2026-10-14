@@ -22,13 +22,25 @@ interface ChatThreadProps {
   /** Shown instead of the thread (e.g. a chain load error). */
   error: ReactNode | null;
   scrollerRef: RefObject<HTMLDivElement | null>;
-  /** Changing it jumps back to the end (e.g. switching nodes). */
+  /**
+   * Changing it scrolls to the start of the current exchange (switching nodes), or to the end
+   * when there is no current exchange.
+   */
   scrollKey: unknown;
 }
 
 function formatDate(iso: string, locale: string): string {
   return new Date(iso).toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' });
 }
+
+type Jump = 'current' | 'bottom' | null;
+
+const isAtBottom = (element: HTMLElement): boolean =>
+  element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+
+/** Scroll offset that puts `target` at the top of `scroller`. */
+const offsetWithin = (target: HTMLElement, scroller: HTMLElement): number =>
+  target.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
 
 const inFlightKey = (view: InFlightView | null): string | null => {
   if (!view) return null;
@@ -53,25 +65,45 @@ export function ChatThread({
 }: ChatThreadProps) {
   const { i18n } = useTranslation('chat');
   const stickToBottom = useRef(true);
+  /** Pending jump, applied once the content it targets is rendered. */
+  const jump = useRef<Jump>(null);
   const key = inFlightKey(inFlight);
   const stream = inFlight?.kind === 'question' ? inFlight.stream : null;
   const status = inFlight ? inFlightStatus(inFlight) : null;
 
   const onScroll = () => {
     const element = scrollerRef.current;
-    if (element)
-      stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+    if (element) stickToBottom.current = isAtBottom(element);
   };
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: jump to the end when switching nodes or sending
+  // biome-ignore lint/correctness/useExhaustiveDependencies: switching nodes shows the selected exchange from its start
   useLayoutEffect(() => {
-    stickToBottom.current = true;
-  }, [scrollKey, key]);
+    jump.current = currentId === undefined ? 'bottom' : 'current';
+  }, [scrollKey]);
+
+  // A new send / focused question shows at the end.
+  useLayoutEffect(() => {
+    if (key !== null) jump.current = 'bottom';
+  }, [key]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll on new content only
   useLayoutEffect(() => {
     const element = scrollerRef.current;
-    if (element && stickToBottom.current) element.scrollTop = element.scrollHeight;
+    if (!element) return;
+    if (jump.current === 'current') {
+      // The chain may still be loading (or be the previous one): wait for the exchange.
+      const target = element.querySelector<HTMLElement>('.exchange-current');
+      if (!target) return;
+      element.scrollTop = offsetWithin(target, element);
+      jump.current = null;
+      stickToBottom.current = isAtBottom(element);
+      return;
+    }
+    if (jump.current === 'bottom') {
+      jump.current = null;
+      stickToBottom.current = true;
+    }
+    if (stickToBottom.current) element.scrollTop = element.scrollHeight;
   }, [messages, key, stream?.text.length, stream?.attachments.length, status]);
 
   return (
@@ -85,6 +117,7 @@ export function ChatThread({
           {messages.map((node) => (
             <Exchange
               key={node.id}
+              nodeId={node.id}
               question={node.user}
               answer={node.assistant}
               attachments={{

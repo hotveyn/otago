@@ -14,7 +14,7 @@ import {
   questionTitle,
   type RemovedReason,
 } from '../lib/questions';
-import { type Navigate, readUrlState, type UrlState } from '../lib/url-state';
+import { currentUrl, type Navigate, readUrlState, type UrlState } from '../lib/url-state';
 
 interface QuestionEffectsProps {
   url: UrlState;
@@ -55,7 +55,7 @@ export function QuestionEffects({ url, navigate }: QuestionEffectsProps) {
   useEffect(() => {
     let lostOnRestart = 0;
     let restartFlush = false;
-    const live = () => readUrlState(window.location.search);
+    const live = () => readUrlState(currentUrl());
 
     const onDone = (event: Extract<LifecycleEvent, { type: 'done' }>) => {
       const question = event.question;

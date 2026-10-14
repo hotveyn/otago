@@ -146,19 +146,27 @@ h4 {
   overflow: hidden;
 }
 
-/* Side chat open: sidebar | graph | main chat | side chat. The main chat is no longer at
-   the right edge, so both chat panes centre their reading column inside the pane. */
+/* Side chat open: sidebar | graph | main chat | side chat. The side chat takes its width
+   out of the main chat, so the graph splitter stays put. The main chat's reading column
+   keeps the screen position it had with the side closed (its pane now ends --side-w short
+   of the right edge) and only moves once it would leave the pane. */
 .app.app-side-open {
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr) var(--chat-w) var(--side-w);
 }
 
 .app-side-open .chat-pane {
-  --chat-pad-l: max(var(--chat-gutter), calc((var(--chat-w) - var(--chat-col)) / 2));
-  --chat-pad-r: var(--chat-pad-l);
+  --chat-pad-l: max(
+    var(--chat-gutter),
+    min(
+      calc(var(--chat-w) + var(--side-w) - 50vw - var(--chat-col) / 2),
+      calc((var(--chat-w) - var(--chat-col)) / 2)
+    )
+  );
 }
 
-.side-pane {
+.app-side-open .side-pane {
   --chat-w: var(--side-w);
+  --chat-pad-l: max(var(--chat-gutter), calc(var(--chat-w) - 50vw - var(--chat-col) / 2));
 }
 
 .splitter {

@@ -251,6 +251,17 @@ describe('askAsideTarget and focusedIn', () => {
     });
   });
 
+  it('anchors on the node the text was selected in, not the main focus', () => {
+    expect(askAsideTarget(url({ node: 'основы/глубже' }), 'основы')).toEqual({
+      side: { anchor: 'основы', head: null, question: null },
+    });
+    const idle = { anchor: 'основы', head: null, question: null };
+    expect(askAsideTarget(url({ node: 'основы/глубже', side: idle }), 'основы')).toBeNull();
+    expect(askAsideTarget(url({ node: 'основы/глубже', side: idle }), '')).toEqual({
+      side: { anchor: '', head: null, question: null },
+    });
+  });
+
   it('tells which panel shows a question', () => {
     const current = url({ question: 'm', side: { anchor: '', head: null, question: 's' } });
     expect(focusedIn(current, 'm')).toBe('main');

@@ -1,10 +1,12 @@
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ApiError } from '../../api/client';
 import { useChain } from '../../api/queries';
 import type { ChainNode, TreeDetail } from '../../api/types';
 import { describeError } from '../../lib/chat-errors';
+import { initialScrollAnchor, nextScrollAnchor } from '../../lib/chat-scroll';
 import { stashKeyOf } from '../../lib/draft-stash';
+import { useQuestionStore } from '../../lib/question-store';
 import { inFlightStatus, MAIN_CONTEXT, pendingLabel } from '../../lib/questions';
 import { Button } from '../ui/Button';
 import { ErrorNote } from '../ui/ErrorNote';
@@ -20,8 +22,11 @@ interface ChatViewProps {
   /** In-flight question shown under `currentId` (`?q=`). */
   question: string | null;
   onSelectNode: (id: string) => void;
-  /** Offers "Ask aside" on a selection; `null` while it is not possible. */
-  onAskAside: ((text: string) => void) | null;
+  /**
+   * Offers "Ask aside" on a selection, anchored on the node the text was selected in;
+   * `null` while it is not possible.
+   */
+  onAskAside: ((text: string, anchor: string) => void) | null;
 }
 
 const NO_MESSAGES: ChainNode[] = [];
@@ -44,13 +49,29 @@ export function ChatView({ tree, currentId, question, onSelectNode, onAskAside }
   });
   const { quote } = composer;
 
-  // Quotes only edit the draft; the message still goes under `currentId`.
+  // Switching nodes scrolls the thread to the selected exchange; following a just-saved
+  // answer keeps the reading position (state adjusted during render, see `nextScrollAnchor`).
+  const store = useQuestionStore();
+  const [anchor, setAnchor] = useState(() => initialScrollAnchor(currentId, question));
+  const nextAnchor = nextScrollAnchor(anchor, currentId, question, store.getState().questions);
+  if (nextAnchor !== anchor) setAnchor(nextAnchor);
+
+  // Quotes only edit the draft; the message still goes under `currentId`. "Ask aside" branches
+  // from the exchange the text was selected in (the chain shows ancestors too).
   const selectionActions = useMemo<SelectionAction[]>(
     () => [
       { id: 'quote', label: t('quote'), run: quote },
-      ...(onAskAside ? [{ id: 'aside', label: t('askAside'), run: onAskAside }] : []),
+      ...(onAskAside
+        ? [
+            {
+              id: 'aside',
+              label: t('askAside'),
+              run: (text: string, nodeId: string | null) => onAskAside(text, nodeId ?? currentId),
+            },
+          ]
+        : []),
     ],
-    [t, quote, onAskAside],
+    [t, quote, onAskAside, currentId],
   );
 
   const messages = chain.data ?? NO_MESSAGES;
@@ -97,7 +118,7 @@ export function ChatView({ tree, currentId, question, onSelectNode, onAskAside }
         currentId={question ? undefined : currentId}
         onSelectNode={onSelectNode}
         scrollerRef={scroller}
-        scrollKey={currentId}
+        scrollKey={nextAnchor.key}
         error={
           chain.error ? (
             <>

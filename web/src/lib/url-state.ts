@@ -27,10 +27,36 @@ export const isValidHead = (head: string, anchor: string) =>
 /** Ids from the URL may be NFD (e.g. a pasted macOS path); the server sends NFC. */
 const nfc = (id: string) => id.normalize('NFC');
 
-export function readUrlState(search: string): UrlState {
-  const params = new URLSearchParams(search);
-  const tree = params.get('tree') || null;
-  const node = nfc(params.get('node') ?? '');
+/** A malformed escape (`%E0`) keeps the raw segment, so the app shows a node-missing state. */
+const decodeSegment = (segment: string) => {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+};
+
+/** `/<tree>/<node id>` → tree id and node id; `/` → neither. Repeated slashes are ignored. */
+function readPath(pathname: string): { tree: string | null; node: string } {
+  const segments = pathname.split('/').filter(Boolean).map(decodeSegment);
+  const [tree = null, ...rest] = segments;
+  return { tree, node: nfc(rest.join('/')) };
+}
+
+/**
+ * `url` is `pathname + search`. The tree and node live in the path (`/<tree>/<node id>`); the
+ * in-flight question and the side chat in the query. Links from before the path form
+ * (`/?tree=&node=`) are still read; the next navigation rewrites them.
+ */
+export function readUrlState(url: string): UrlState {
+  const queryStart = url.indexOf('?');
+  const pathname = queryStart === -1 ? url : url.slice(0, queryStart);
+  const params = new URLSearchParams(queryStart === -1 ? '' : url.slice(queryStart));
+  let { tree, node } = readPath(pathname);
+  if (tree === null && params.get('tree')) {
+    tree = params.get('tree');
+    node = nfc(params.get('node') ?? '');
+  }
   const question = tree === null ? null : params.get('q') || null;
   // List seam: several side chats would be aligned `side`/`sideNode`/`sideQ` entries; read the
   // first only.
@@ -54,18 +80,20 @@ export function readUrlState(search: string): UrlState {
   };
 }
 
+/** `pathname + search` for `state`: `/<tree>/<node id>?q=&side=&sideNode=&sideQ=`, or `/`. */
 export function writeUrlState(state: UrlState): string {
+  if (!state.tree) return '/';
+  const segments = [state.tree, ...state.node.split('/').filter(Boolean)];
+  const pathname = `/${segments.map(encodeURIComponent).join('/')}`;
   const params = new URLSearchParams();
-  if (state.tree) params.set('tree', state.tree);
-  if (state.tree && state.node) params.set('node', state.node);
-  if (state.tree && state.question) params.set('q', state.question);
-  if (state.tree && state.side) {
+  if (state.question) params.set('q', state.question);
+  if (state.side) {
     params.set('side', state.side.anchor);
     if (state.side.head !== null) params.set('sideNode', state.side.head);
     if (state.side.question) params.set('sideQ', state.side.question);
   }
   const query = params.toString().replace(/%2F/g, '/');
-  return query ? `?${query}` : '';
+  return query ? `${pathname}?${query}` : pathname;
 }
 
 /**
@@ -150,16 +178,19 @@ const subscribe = (onChange: () => void) => {
   return () => window.removeEventListener('popstate', onChange);
 };
 
+/** The live `pathname + search`, for async handlers that must not use a stale render. */
+export const currentUrl = () => `${window.location.pathname}${window.location.search}`;
+
 export type Navigate = (next: Partial<UrlState>, replace?: boolean) => void;
 
-/** Selected tree, node, focus and side chat, kept in the query string so reloads keep them. */
+/** Selected tree, node, focus and side chat, kept in the URL so reloads keep them. */
 export function useUrlState(): [UrlState, Navigate] {
-  const search = useSyncExternalStore(subscribe, () => window.location.search);
-  const state = useMemo(() => readUrlState(search), [search]);
+  const url = useSyncExternalStore(subscribe, currentUrl);
+  const state = useMemo(() => readUrlState(url), [url]);
   const navigate = useCallback<Navigate>((next, replace = false) => {
-    const merged = mergeUrlState(readUrlState(window.location.search), next);
-    const url = `${window.location.pathname}${writeUrlState(merged)}`;
-    if (url === `${window.location.pathname}${window.location.search}`) return;
+    const merged = mergeUrlState(readUrlState(currentUrl()), next);
+    const url = writeUrlState(merged);
+    if (url === currentUrl()) return;
     window.history[replace ? 'replaceState' : 'pushState'](null, '', url);
     window.dispatchEvent(new PopStateEvent('popstate'));
   }, []);

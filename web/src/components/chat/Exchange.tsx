@@ -9,6 +9,8 @@ interface ExchangeProps {
   answer: string;
   /** What `attachments/<name>` references and the attachment list resolve against. */
   attachments: AttachmentScopeValue;
+  /** Saved node this exchange shows; lets selection actions tell which node was selected. */
+  nodeId?: string;
   meta?: ReactNode;
   /** Files the user attached, shown under the question (outside the attachment scope). */
   files?: ReactNode;
@@ -23,6 +25,7 @@ export function Exchange({
   question,
   answer,
   attachments,
+  nodeId,
   meta,
   files,
   current,
@@ -32,7 +35,7 @@ export function Exchange({
 }: ExchangeProps) {
   const { t } = useTranslation('chat');
   return (
-    <article className={current ? 'exchange exchange-current' : 'exchange'}>
+    <article className={current ? 'exchange exchange-current' : 'exchange'} data-node-id={nodeId}>
       {meta && <div className="exchange-meta">{meta}</div>}
       <div className="msg msg-user">
         {question !== '' && <Markdown text={question} plain />}

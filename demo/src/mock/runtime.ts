@@ -35,5 +35,5 @@ export function resetDemo(): void {
   } catch {
     // Nothing stored.
   }
-  location.replace(location.pathname);
+  location.replace('/');
 }

@@ -28,22 +28,23 @@ export function defaultSideWidth(viewport: number): number {
 }
 
 /**
- * Keep the chat wide enough to read and the graph wide enough to see.
- * `reserved` is space taken by other columns (the open side chat).
+ * The chat area is everything right of the graph: the main chat plus, while it is open,
+ * the side chat. Keep it wide enough to read and the graph wide enough to see.
  */
-export function clampChatWidth(
+export function clampChatAreaWidth(
   width: number,
   viewport: number,
   sidebar: number,
-  reserved = 0,
+  sideOpen = false,
 ): number {
-  const max = Math.max(CHAT_MIN_WIDTH, viewport - sidebar - GRAPH_MIN_WIDTH - reserved);
-  return Math.round(Math.min(Math.max(width, CHAT_MIN_WIDTH), max));
+  const min = CHAT_MIN_WIDTH + (sideOpen ? SIDE_MIN_WIDTH : 0);
+  const max = Math.max(min, viewport - sidebar - GRAPH_MIN_WIDTH);
+  return Math.round(Math.min(Math.max(width, min), max));
 }
 
-/** Keep the side chat readable while leaving room for the graph and the main chat. */
-export function clampSideWidth(width: number, viewport: number, sidebar: number): number {
-  const max = Math.max(SIDE_MIN_WIDTH, viewport - sidebar - GRAPH_MIN_WIDTH - CHAT_MIN_WIDTH);
+/** Keep the side chat readable while leaving the main chat its minimum inside the area. */
+export function clampSideWidth(width: number, area: number): number {
+  const max = Math.max(SIDE_MIN_WIDTH, area - CHAT_MIN_WIDTH);
   return Math.round(Math.min(Math.max(width, SIDE_MIN_WIDTH), max));
 }
 
@@ -66,12 +67,16 @@ export interface PaneLayout {
   sidebarCollapsed: boolean;
   toggleSidebar: () => void;
   sidebarWidth: number;
-  /** Clamped to the current viewport. */
+  /** Main chat pane, clamped to the current viewport. */
   chatWidth: number;
+  /** Widest the main chat can get without the graph going below its minimum. */
+  chatMaxWidth: number;
   setChatWidth: (width: number) => void;
   resetChatWidth: () => void;
-  /** Clamped to the current viewport. */
+  /** Side chat pane, clamped to the current viewport. */
   sideWidth: number;
+  /** Widest the side chat can get without the main chat going below its minimum. */
+  sideMaxWidth: number;
   setSideWidth: (width: number) => void;
   resetSideWidth: () => void;
   viewport: number;
@@ -79,7 +84,9 @@ export interface PaneLayout {
 
 /**
  * Sidebar collapse + chat/graph and side chat splitter positions, persisted per browser.
- * While the side chat is open the main chat shrinks first; the side keeps its width.
+ * The stored chat width is the whole chat area (graph splitter to the right edge). The side
+ * chat takes its width out of the main chat, so opening or closing it never moves the graph
+ * splitter; only when the area is too small for both does it grow into the graph.
  */
 export function usePaneLayout(sideOpen = false): PaneLayout {
   const viewport = useViewportWidth();
@@ -95,31 +102,35 @@ export function usePaneLayout(sideOpen = false): PaneLayout {
   }, []);
 
   const sidebar = sidebarWidth(sidebarCollapsed);
-  const sideWidth = clampSideWidth(storedSide ?? defaultSideWidth(viewport), viewport, sidebar);
-  const reserved = sideOpen ? sideWidth : 0;
-  const chatWidth = clampChatWidth(
+  const area = clampChatAreaWidth(
     storedChat ?? defaultChatWidth(viewport),
     viewport,
     sidebar,
-    reserved,
+    sideOpen,
   );
+  const sideWidth = clampSideWidth(storedSide ?? defaultSideWidth(viewport), area);
+  const reserved = sideOpen ? sideWidth : 0;
+  const chatWidth = area - reserved;
+  const chatMaxWidth =
+    clampChatAreaWidth(Number.POSITIVE_INFINITY, viewport, sidebar, sideOpen) - reserved;
+  const sideMaxWidth = clampSideWidth(Number.POSITIVE_INFINITY, area);
 
   const setChatWidth = useCallback(
     (width: number) => {
-      const next = clampChatWidth(width, window.innerWidth, sidebar, reserved);
+      const next = clampChatAreaWidth(width + reserved, window.innerWidth, sidebar, sideOpen);
       setStoredChat(next);
       safeStorage.set(CHAT_WIDTH_KEY, String(next));
     },
-    [sidebar, reserved],
+    [sidebar, reserved, sideOpen],
   );
 
   const setSideWidth = useCallback(
     (width: number) => {
-      const next = clampSideWidth(width, window.innerWidth, sidebar);
+      const next = clampSideWidth(width, area);
       setStoredSide(next);
       safeStorage.set(SIDE_WIDTH_KEY, String(next));
     },
-    [sidebar],
+    [area],
   );
 
   const resetSideWidth = useCallback(() => {
@@ -149,9 +160,11 @@ export function usePaneLayout(sideOpen = false): PaneLayout {
     toggleSidebar,
     sidebarWidth: sidebar,
     chatWidth,
+    chatMaxWidth,
     setChatWidth,
     resetChatWidth,
     sideWidth,
+    sideMaxWidth,
     setSideWidth,
     resetSideWidth,
     viewport,

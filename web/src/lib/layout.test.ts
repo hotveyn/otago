@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CHAT_MIN_WIDTH,
-  clampChatWidth,
+  clampChatAreaWidth,
   clampSideWidth,
   defaultChatWidth,
   defaultSideWidth,
@@ -10,21 +10,23 @@ import {
   SIDEBAR_WIDTH,
 } from './layout';
 
-describe('clampChatWidth', () => {
+describe('clampChatAreaWidth', () => {
   it('keeps widths inside the allowed range untouched', () => {
-    expect(clampChatWidth(600, 1600, SIDEBAR_WIDTH)).toBe(600);
+    expect(clampChatAreaWidth(600, 1600, SIDEBAR_WIDTH)).toBe(600);
   });
 
   it('never goes below the chat minimum', () => {
-    expect(clampChatWidth(100, 1600, SIDEBAR_WIDTH)).toBe(CHAT_MIN_WIDTH);
+    expect(clampChatAreaWidth(100, 1600, SIDEBAR_WIDTH)).toBe(CHAT_MIN_WIDTH);
   });
 
   it('leaves room for the graph', () => {
-    expect(clampChatWidth(5000, 1600, SIDEBAR_WIDTH)).toBe(1600 - SIDEBAR_WIDTH - GRAPH_MIN_WIDTH);
+    expect(clampChatAreaWidth(5000, 1600, SIDEBAR_WIDTH)).toBe(
+      1600 - SIDEBAR_WIDTH - GRAPH_MIN_WIDTH,
+    );
   });
 
   it('prefers the chat minimum on tiny viewports', () => {
-    expect(clampChatWidth(5000, 500, SIDEBAR_WIDTH)).toBe(CHAT_MIN_WIDTH);
+    expect(clampChatAreaWidth(5000, 500, SIDEBAR_WIDTH)).toBe(CHAT_MIN_WIDTH);
   });
 });
 
@@ -35,36 +37,45 @@ describe('defaultChatWidth', () => {
   });
 });
 
-describe('clampChatWidth with a side chat', () => {
-  it('leaves room for the reserved side column', () => {
-    expect(clampChatWidth(5000, 1600, SIDEBAR_WIDTH, 400)).toBe(
-      1600 - SIDEBAR_WIDTH - GRAPH_MIN_WIDTH - 400,
-    );
-    expect(clampChatWidth(500, 1600, SIDEBAR_WIDTH, 400)).toBe(500);
+describe('clampChatAreaWidth with a side chat', () => {
+  it('keeps the area where it is when both chats fit', () => {
+    expect(clampChatAreaWidth(900, 1600, SIDEBAR_WIDTH, true)).toBe(900);
   });
 
-  it('still prefers the chat minimum', () => {
-    expect(clampChatWidth(5000, 900, SIDEBAR_WIDTH, 600)).toBe(CHAT_MIN_WIDTH);
+  it('grows the area only when both chats cannot fit', () => {
+    expect(clampChatAreaWidth(300, 1600, SIDEBAR_WIDTH, true)).toBe(
+      CHAT_MIN_WIDTH + SIDE_MIN_WIDTH,
+    );
+  });
+
+  it('still leaves room for the graph', () => {
+    expect(clampChatAreaWidth(5000, 1600, SIDEBAR_WIDTH, true)).toBe(
+      1600 - SIDEBAR_WIDTH - GRAPH_MIN_WIDTH,
+    );
+  });
+
+  it('prefers both minimums on tiny viewports', () => {
+    expect(clampChatAreaWidth(5000, 500, SIDEBAR_WIDTH, true)).toBe(
+      CHAT_MIN_WIDTH + SIDE_MIN_WIDTH,
+    );
   });
 });
 
 describe('clampSideWidth', () => {
   it('keeps widths inside the allowed range untouched', () => {
-    expect(clampSideWidth(420, 1600, SIDEBAR_WIDTH)).toBe(420);
+    expect(clampSideWidth(420, 1000)).toBe(420);
   });
 
   it('never goes below the side minimum', () => {
-    expect(clampSideWidth(50, 1600, SIDEBAR_WIDTH)).toBe(SIDE_MIN_WIDTH);
+    expect(clampSideWidth(50, 1000)).toBe(SIDE_MIN_WIDTH);
   });
 
-  it('leaves room for the graph and the main chat', () => {
-    expect(clampSideWidth(5000, 1600, SIDEBAR_WIDTH)).toBe(
-      1600 - SIDEBAR_WIDTH - GRAPH_MIN_WIDTH - CHAT_MIN_WIDTH,
-    );
+  it('leaves the main chat its minimum inside the area', () => {
+    expect(clampSideWidth(5000, 1000)).toBe(1000 - CHAT_MIN_WIDTH);
   });
 
-  it('prefers the side minimum on tiny viewports', () => {
-    expect(clampSideWidth(5000, 600, SIDEBAR_WIDTH)).toBe(SIDE_MIN_WIDTH);
+  it('prefers the side minimum in a tiny area', () => {
+    expect(clampSideWidth(5000, 300)).toBe(SIDE_MIN_WIDTH);
   });
 });
 

@@ -16,19 +16,19 @@ import { createRoot } from 'react-dom/client';
 import { App } from '../../web/src/App';
 import { createQuestionStore, QuestionStoreContext } from '../../web/src/lib/question-store';
 import { startQuestionSync } from '../../web/src/lib/question-sync';
-import { readUrlState, writeUrlState } from '../../web/src/lib/url-state';
+import { currentUrl, readUrlState, writeUrlState } from '../../web/src/lib/url-state';
 import { DemoBanner } from './DemoBanner';
 import { api } from './mock/client';
 import { demoConnection } from './mock/connection';
 import { demo } from './mock/runtime';
 
 // First visit (no tree in the URL): open the first tree at its first node.
-if (readUrlState(location.search).tree === null) {
+if (readUrlState(currentUrl()).tree === null) {
   const [tree] = demo.trees.listTrees();
   if (tree) {
     const node = demo.trees.hierarchy(tree.id)[0]?.id ?? '';
-    const search = writeUrlState({ tree: tree.id, node, question: null, side: null });
-    history.replaceState(history.state, '', `${location.pathname}${search}`);
+    const url = writeUrlState({ tree: tree.id, node, question: null, side: null });
+    history.replaceState(history.state, '', url);
   }
 }
 

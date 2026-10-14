@@ -20,18 +20,13 @@ import { ErrorNote } from './components/ui/ErrorNote';
 import { Notices } from './components/ui/Notices';
 import { Splitter } from './components/ui/Splitter';
 import { type BlockersOpened, treeBusyDetailsOf } from './lib/blockers';
-import {
-  CHAT_MIN_WIDTH,
-  clampChatWidth,
-  clampSideWidth,
-  SIDE_MIN_WIDTH,
-  usePaneLayout,
-} from './lib/layout';
+import { CHAT_MIN_WIDTH, SIDE_MIN_WIDTH, usePaneLayout } from './lib/layout';
 import { askAsideTarget, openPendingTarget } from './lib/question-focus';
 import { useQuestionStore } from './lib/question-store';
 import { afterMove } from './lib/tree';
 import {
   closeSide,
+  currentUrl,
   followTreeRename,
   promoteSide,
   readUrlState,
@@ -51,7 +46,7 @@ interface OpenBlockers {
   opened: BlockersOpened;
 }
 
-const liveUrl = () => readUrlState(window.location.search);
+const liveUrl = () => readUrlState(currentUrl());
 
 export function App() {
   const { t } = useTranslation(['app', 'common']);
@@ -100,11 +95,11 @@ export function App() {
     [navigate, store],
   );
 
-  // Ask aside from the current main focus: reuse the open aside on the same anchor, otherwise
-  // open a new one (the previous aside's question keeps answering in the background).
+  // Ask aside from the node the text was selected in: reuse the open aside on the same anchor,
+  // otherwise open a new one (the previous aside's question keeps answering in the background).
   const askAside = useCallback(
-    (text: string) => {
-      const target = askAsideTarget(liveUrl());
+    (text: string, anchor: string) => {
+      const target = askAsideTarget(liveUrl(), anchor);
       if (target === 'disabled') return;
       if (target) navigate(target);
       seedNonce.current += 1;
@@ -251,12 +246,7 @@ export function App() {
               <Splitter
                 value={layout.chatWidth}
                 min={CHAT_MIN_WIDTH}
-                max={clampChatWidth(
-                  Number.POSITIVE_INFINITY,
-                  layout.viewport,
-                  layout.sidebarWidth,
-                  sideOpen ? layout.sideWidth : 0,
-                )}
+                max={layout.chatMaxWidth}
                 onChange={layout.setChatWidth}
                 onReset={layout.resetChatWidth}
                 onDragChange={setResizing}
@@ -284,11 +274,7 @@ export function App() {
                 <Splitter
                   value={layout.sideWidth}
                   min={SIDE_MIN_WIDTH}
-                  max={clampSideWidth(
-                    Number.POSITIVE_INFINITY,
-                    layout.viewport,
-                    layout.sidebarWidth,
-                  )}
+                  max={layout.sideMaxWidth}
                   onChange={layout.setSideWidth}
                   onReset={layout.resetSideWidth}
                   onDragChange={setResizing}
