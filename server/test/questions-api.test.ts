@@ -44,6 +44,9 @@ function flakyAgent(failures = 1, name = 'recovered') {
       nameCalls.push(input);
       return name;
     },
+    async suggest() {
+      return [];
+    },
   };
   return agent;
 }
@@ -770,6 +773,9 @@ describe('POST /api/trees/:tree/questions', () => {
         async name() {
           return 'ok';
         },
+        async suggest() {
+          return [];
+        },
       };
       await setup(agent);
       const failed = await askAndSettle(ctx, { parentId: '', text: 'Q' });
@@ -822,6 +828,9 @@ describe('POST /api/trees/:tree/questions', () => {
         },
         async name(input) {
           return input.question;
+        },
+        async suggest() {
+          return [];
         },
       };
       await setup(agent);

@@ -285,6 +285,9 @@ describe('tree rename and retained questions', () => {
       async name() {
         return 'answer';
       },
+      async suggest() {
+        return [];
+      },
     };
     ctx = await makeApp(agent, TEST_MODELS);
     await ctx.app.inject({ method: 'POST', url: '/api/trees', payload: { title: 'Rust' } });

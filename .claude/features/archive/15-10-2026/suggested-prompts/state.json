@@ -1,0 +1,39 @@
+{
+  "slug": "suggested-prompts",
+  "title": "Suggested follow-up prompts under a node's answer",
+  "created": "2026-10-15T10:58:29Z",
+  "workspace_root": "/Users/ioannshestopalov/Programming/otago",
+  "contracts": {
+    "owner": "server",
+    "generated": true,
+    "path": ".claude/features/archive/15-10-2026/suggested-prompts/contracts"
+  },
+  "projects": [
+    {
+      "name": "server",
+      "root": "server",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "server",
+      "stage": "implemented"
+    },
+    {
+      "name": "web",
+      "root": "web",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "client",
+      "stage": "implemented"
+    },
+    {
+      "name": "demo",
+      "root": "demo",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "client",
+      "stage": "implemented"
+    }
+  ],
+  "archived": "2026-10-15T12:21:15Z",
+  "archived_to": ".claude/features/archive/15-10-2026/suggested-prompts"
+}

@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import {
+  MAX_SUGGESTIONS,
+  sanitizeSuggestionText,
+  setSuggestionsLine,
+  suggestionKey,
+} from '../../../server/src/storage/suggestions';
 import type { ChainNode, HierarchyNode } from '../../../web/src/api/types';
 import { pdfPageCount, textLineCount } from './cite';
+import { parseNodeFile } from './format';
 import { seedFiles } from './seed';
 import { makeDemo } from './test-helpers';
 
@@ -137,5 +144,78 @@ describe('seed trees', () => {
       expect(text, path).not.toContain('\r');
       expect(pdfPageCount(new TextEncoder().encode(text)), path).toBeGreaterThanOrEqual(1);
     }
+  });
+
+  it('stores suggestions in the exact write form, sanitized, own first, at most 5', () => {
+    const nodeFiles = Object.entries(seedFiles()).filter(([path]) => path.endsWith('/node.md'));
+    let withKey = 0;
+    for (const [path, raw] of nodeFiles) {
+      const keyLines = raw.split('\n').filter((line) => /^suggestions\s*:/.test(line));
+      if (keyLines.length === 0) continue;
+      withKey++;
+      expect(keyLines, path).toHaveLength(1);
+      const stored = parseNodeFile(raw).suggestions;
+      // Not a block list, null or a string: the one-line JSON form only.
+      expect(stored, path).toBeDefined();
+      expect(setSuggestionsLine(raw, stored ?? []), path).toBe(raw);
+      const items = stored ?? [];
+      expect(items.length, path).toBeLessThanOrEqual(MAX_SUGGESTIONS);
+      for (const item of items) expect(sanitizeSuggestionText(item.text), path).toBe(item.text);
+      const firstInherited = items.findIndex((item) => item.up > 0);
+      if (firstInherited !== -1) {
+        expect(
+          items.slice(firstInherited).every((item) => item.up > 0),
+          path,
+        ).toBe(true);
+      }
+    }
+    expect(withKey).toBeGreaterThan(0);
+  });
+
+  it('every inherited seed suggestion points at an ancestor that owns the text', () => {
+    for (const tree of trees) {
+      for (const id of flatten(demo.trees.hierarchy(tree.id))) {
+        const chain = demo.trees.suggestionChain(tree.id, id);
+        const node = chain.at(-1);
+        for (const item of node?.suggestions ?? []) {
+          if (item.up === 0) continue;
+          const where = `${tree.id}/${id}: ${item.text}`;
+          expect(item.up, where).toBeLessThan(chain.length);
+          const owner = chain[chain.length - 1 - item.up];
+          expect(
+            owner?.suggestions?.some(
+              (own) => own.up === 0 && suggestionKey(own.text) === suggestionKey(item.text),
+            ),
+            where,
+          ).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('showcases missing, empty, deep inherited and used suggestions', () => {
+    let missing = 0;
+    let empty = 0;
+    let deep = 0;
+    let hiddenAsUsed = 0;
+    for (const tree of trees) {
+      for (const id of flatten(demo.trees.hierarchy(tree.id))) {
+        const stored = demo.trees.suggestionChain(tree.id, id).at(-1)?.suggestions;
+        if (stored === undefined) missing++;
+        else if (stored.length === 0) empty++;
+        if (stored?.some((item) => item.up >= 2)) deep++;
+        const view = demo.trees.suggestionsView(tree.id, id);
+        if (stored && view.suggestions.length < stored.length) hiddenAsUsed++;
+      }
+    }
+    expect(missing).toBeGreaterThanOrEqual(1);
+    expect(empty).toBeGreaterThanOrEqual(1);
+    expect(deep).toBeGreaterThanOrEqual(1);
+    expect(hiddenAsUsed).toBeGreaterThanOrEqual(1);
+    const plan = demo.trees.suggestionsView('rust-ownership', 'what-is-ownership');
+    expect(plan.suggestions.map((s) => s.text)).toEqual([
+      'How do slices borrow part of a String?',
+      'What happens to ownership when I pass a value to a function?',
+    ]);
   });
 });

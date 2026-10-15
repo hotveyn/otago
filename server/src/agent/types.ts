@@ -1,6 +1,12 @@
-import type { AttachmentStaging, ChainNode, PromptFile } from '../storage/index.js';
+import type {
+  AttachmentStaging,
+  ChainNode,
+  PromptFile,
+  SuggestionCandidate,
+  SuggestPick,
+} from '../storage/index.js';
 
-export type { AttachmentStaging, PromptFile };
+export type { AttachmentStaging, PromptFile, SuggestionCandidate, SuggestPick };
 
 export interface AskInput {
   /** Absolute path of the tree folder; the agent runs with it as `cwd`. */
@@ -31,6 +37,27 @@ export interface NameInput {
   signal: AbortSignal;
 }
 
+/** One exchange of the suggestion prompt. */
+export interface SuggestExchange {
+  /** Node id; `undefined` for a node not committed yet (the at-save case). */
+  id?: string;
+  /** User text; `Attached files: <names>` for a files-only message (as naming). */
+  user: string;
+  assistant: string;
+}
+
+export interface SuggestInput {
+  /** Ancestors of the node, top-level first (`[]` for a top-level node). */
+  ancestors: SuggestExchange[];
+  /** The node the suggestions are for (its question and full answer). */
+  current: SuggestExchange;
+  /** Inheritance candidates (`[]` when none); `keep` picks index into this array. */
+  candidates: SuggestionCandidate[];
+  model: string;
+  /** Aborted on cancel/shutdown and after the suggestion timeout. */
+  signal: AbortSignal;
+}
+
 export type AgentEvent =
   | { type: 'chunk'; text: string }
   | { type: 'done'; text: string; model: string };
@@ -43,4 +70,9 @@ export interface Agent {
    * (a valid Unicode node name, see `toNodeName`).
    */
   name(input: NameInput): Promise<string>;
+  /**
+   * Suggested follow-up prompts: the parsed raw picks (possibly `[]`). Throws on failure,
+   * abort or an unparseable reply. Sanitizing and capping is the caller's job.
+   */
+  suggest(input: SuggestInput): Promise<SuggestPick[]>;
 }

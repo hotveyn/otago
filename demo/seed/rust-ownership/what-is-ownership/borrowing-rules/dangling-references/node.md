@@ -1,6 +1,7 @@
 ---
 created: 2026-09-20T09:52:00.000Z
 model: claude-haiku-4-5
+suggestions: []
 ---
 <!-- otago:user -->
 How does Rust prevent dangling references?

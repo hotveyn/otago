@@ -1329,6 +1329,36 @@ select:focus {
   color: var(--danger);
 }
 
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6.4px;
+  margin-top: 12.8px;
+}
+
+.suggestions .suggestion {
+  justify-content: flex-start;
+  max-width: 100%;
+  border-radius: 9.6px;
+  padding: 3.2px 9.6px;
+  text-align: start;
+  white-space: normal;
+  color: var(--text-soft);
+}
+
+.suggestions .suggestion:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.suggestion-source {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 9.6px;
+  color: var(--muted);
+}
+
 .composer {
   border-top: 1px solid var(--line);
   padding: 8px var(--chat-pad-r) 11.2px var(--chat-pad-l);

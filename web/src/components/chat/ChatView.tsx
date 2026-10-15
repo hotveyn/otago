@@ -13,8 +13,10 @@ import { ErrorNote } from '../ui/ErrorNote';
 import { ChatThread } from './ChatThread';
 import { Composer } from './Composer';
 import { type SelectionAction, SelectionActions } from './SelectionActions';
+import { SuggestionList } from './SuggestionList';
 import { useComposer } from './useComposer';
 import { useInFlight } from './useInFlight';
+import { useSuggestions } from './useSuggestions';
 
 interface ChatViewProps {
   tree: TreeDetail;
@@ -41,9 +43,10 @@ export function ChatView({ tree, currentId, question, onSelectNode, onAskAside }
     parentId: currentId,
     focus: question,
   });
+  const stashKey = stashKeyOf(tree.id, MAIN_CONTEXT);
   const composer = useComposer({
     treeId: tree.id,
-    stashKey: stashKeyOf(tree.id, MAIN_CONTEXT),
+    stashKey,
     target: { parentId: currentId, context: MAIN_CONTEXT },
     locked: inFlight.locked,
   });
@@ -78,6 +81,15 @@ export function ChatView({ tree, currentId, question, onSelectNode, onAskAside }
   const view = inFlight.view;
   const status = view ? inFlightStatus(view) : null;
   const focusTitle = view?.kind === 'question' && question !== null ? view.info.title : null;
+  // Under the focused saved node only, once its chain is the one shown (not a placeholder).
+  const suggestions = useSuggestions({
+    treeId: tree.id,
+    nodeId: currentId || null,
+    context: MAIN_CONTEXT,
+    stashKey,
+    models: composer.models,
+    show: question === null && view === null && messages.at(-1)?.id === currentId && !chain.error,
+  });
 
   return (
     <div className="chat">
@@ -119,6 +131,8 @@ export function ChatView({ tree, currentId, question, onSelectNode, onAskAside }
         onSelectNode={onSelectNode}
         scrollerRef={scroller}
         scrollKey={nextAnchor.key}
+        tail={<SuggestionList items={suggestions.items} onAsk={suggestions.ask} />}
+        tailKey={suggestions.items.length}
         error={
           chain.error ? (
             <>

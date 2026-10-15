@@ -2,6 +2,7 @@
  * The mock backend: VFS + storage + locks + questions, exposed as an object with the shape of
  * `api` from `web/src/api/client.ts`. Each method plays the route of the same name in
  * `server/src/routes/` (404 before the lock, lock, storage call, question remaps).
+ * The suggestion routes take no lock (never 409).
  */
 import type { api as realApi } from '../../../web/src/api/client';
 import type { FileFolder, ModelsInfo } from '../../../web/src/api/types';
@@ -9,7 +10,8 @@ import { BlobUrls } from './blob-urls';
 import { badRequest, payloadTooLarge } from './errors';
 import { DEMO_MAX_FILE_BYTES } from './files';
 import { TreeLocks } from './locks';
-import { Questions, type Schedule } from './questions';
+import { defaultSchedule, Questions, type Schedule } from './questions';
+import { Suggestions, type SuggestSimulator, simulateSuggestions } from './suggestions';
 import { TreeStore } from './trees';
 import { Vfs, type VfsStorage } from './vfs';
 
@@ -31,12 +33,15 @@ export interface DemoOptions {
   uuid?: () => string;
   /** Simulated network latency of every call, ms. Default 40–120. */
   latency?: () => number;
+  /** Suggestion "model" (test hook, like the server's `fakeAgent`). Default: templates. */
+  suggest?: SuggestSimulator;
 }
 
 export interface Demo {
   vfs: Vfs;
   trees: TreeStore;
   questions: Questions;
+  suggestions: Suggestions;
   api: DemoApi;
   urls: {
     source(treeId: string, file: string): string;
@@ -46,6 +51,11 @@ export interface Demo {
 
 const nfc = (id: string) => id.normalize('NFC');
 const decoder = new TextDecoder();
+
+/** The route schema step of `node` (query or body): a string of at most 1000 code units. */
+function checkNodeParam(node: unknown): asserts node is string {
+  if (typeof node !== 'string' || node.length > 1000) throw badRequest('Invalid input');
+}
 
 function checkTitle(title: unknown): void {
   if (typeof title !== 'string' || !title.trim() || title.trim().length > 200) {
@@ -66,9 +76,15 @@ export function createDemo(options: DemoOptions): Demo {
   const vfs = new Vfs(options.storage);
   if (!vfs.load()) vfs.reset(options.seed);
   const trees = new TreeStore(vfs);
+  const suggestions = new Suggestions({
+    trees,
+    schedule: options.schedule ?? defaultSchedule,
+    simulate: options.suggest ?? simulateSuggestions(options.random ?? Math.random),
+  });
   const questions = new Questions({
     trees,
     models: DEMO_MODELS,
+    suggestions,
     now: options.now,
     random: options.random,
     schedule: options.schedule,
@@ -108,6 +124,16 @@ export function createDemo(options: DemoOptions): Demo {
           questions.renameTree(id, result.id);
           return result;
         });
+      }),
+    getSuggestions: (id, node) =>
+      respond(() => {
+        checkNodeParam(node);
+        return suggestions.view(id, nfc(node));
+      }),
+    generateSuggestions: (id, node) =>
+      respond(() => {
+        checkNodeParam(node);
+        return suggestions.ensure(id, nfc(node));
       }),
     getChain: (id, node) => respond(() => trees.chain(id, nfc(node))),
     getAttachmentText: (id, node, name, folder = 'attachments') =>
@@ -192,6 +218,7 @@ export function createDemo(options: DemoOptions): Demo {
     vfs,
     trees,
     questions,
+    suggestions,
     api,
     urls: {
       // `:file` is NFC-normalized like on the server's sources route.

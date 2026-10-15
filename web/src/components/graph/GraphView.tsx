@@ -436,6 +436,8 @@ function Graph({
       old ? { ...old, nodes: nodesAfter } : old,
     );
     queryClient.removeQueries({ queryKey: ['chain', treeId] });
+    // Ids and "used" state may have changed; the open panels refetch.
+    void queryClient.invalidateQueries({ queryKey: keys.treeSuggestions(treeId) });
   };
 
   // Latest values for the undo callback, which may resolve after a re-render or tree switch.

@@ -1,6 +1,7 @@
 ---
 created: 2026-09-20T09:05:00.000Z
 model: claude-opus-5-5
+suggestions: [{"text":"Why can't I use a String after assigning it to another variable?","up":0},{"text":"How do references and borrowing work?","up":0},{"text":"How do slices borrow part of a String?","up":0},{"text":"What happens to ownership when I pass a value to a function?","up":0}]
 ---
 <!-- otago:user -->
 What is ownership in Rust, in plain words?
@@ -37,6 +38,8 @@ flowchart LR
 ```
 
 All of these checks run at compile time, so they cost nothing at run time[^1].
+
+A good path from here: first moves, then references and borrowing, then slices.
 
 **Exercise:** add `println!("{inner}");` right after the inner block. What error do you expect, and why?
 

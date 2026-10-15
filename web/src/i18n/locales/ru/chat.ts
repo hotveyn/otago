@@ -119,6 +119,11 @@ export const chat = {
     firstRows_other: 'Первые {{shown}} из {{count}} строки',
     downloadFull: 'Скачать весь файл',
   },
+  suggestions: {
+    label: 'Предлагаемые вопросы',
+    from: 'из <name>{{name}}</name>',
+    askUnder: 'Будет задан в «{{target}}»',
+  },
   citations: {
     heading: 'Источники',
     afterSave: 'Откроется после сохранения ответа',

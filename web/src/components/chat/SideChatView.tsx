@@ -14,8 +14,10 @@ import { IdPath } from '../ui/IdPath';
 import { ChatThread } from './ChatThread';
 import { Composer } from './Composer';
 import { type SelectionAction, SelectionActions } from './SelectionActions';
+import { SuggestionList } from './SuggestionList';
 import { useComposer } from './useComposer';
 import { useInFlight } from './useInFlight';
+import { useSuggestions } from './useSuggestions';
 
 export interface SideSeed {
   /** Changes on every "Ask aside", so the same text can be quoted twice. */
@@ -53,9 +55,10 @@ export function SideChatView({
   const chain = useChain(tree.id, parentId);
   const scroller = useRef<HTMLDivElement>(null);
   const inFlight = useInFlight({ treeId: tree.id, context, parentId, focus: side.question });
+  const stashKey = stashKeyOf(tree.id, context);
   const composer = useComposer({
     treeId: tree.id,
-    stashKey: stashKeyOf(tree.id, context),
+    stashKey,
     target: { parentId, context },
     locked: inFlight.locked,
   });
@@ -82,6 +85,20 @@ export function SideChatView({
   const status = view ? inFlightStatus(view) : null;
   const chainMissing = chain.error instanceof ApiError && chain.error.status === 404;
   const promotable = canPromote(side) && !chainMissing;
+  // Under the aside's last saved answer; inherited targets above the anchor are hidden.
+  const suggestions = useSuggestions({
+    treeId: tree.id,
+    nodeId: side.head,
+    context,
+    stashKey,
+    models: composer.models,
+    show:
+      side.question === null &&
+      side.head !== null &&
+      view === null &&
+      messages.at(-1)?.id === side.head &&
+      !chain.error,
+  });
 
   // An explicit close forgets the draft of this aside (switching asides keeps it).
   const close = useCallback(() => {
@@ -142,6 +159,8 @@ export function SideChatView({
         currentId={side.question === null ? (side.head ?? undefined) : undefined}
         scrollerRef={scroller}
         scrollKey={side.anchor}
+        tail={<SuggestionList items={suggestions.items} onAsk={suggestions.ask} />}
+        tailKey={suggestions.items.length}
         error={
           chain.error ? (
             <>

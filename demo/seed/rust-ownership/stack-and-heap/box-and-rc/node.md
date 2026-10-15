@@ -1,6 +1,7 @@
 ---
 created: 2026-09-20T10:22:00.000Z
 model: claude-opus-5-5
+suggestions: [{"text":"When should I use Arc instead of Rc?","up":0},{"text":"How does RefCell work with Rc?","up":0}]
 ---
 <!-- otago:user -->
 When do I need Box or Rc?

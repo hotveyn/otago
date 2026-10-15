@@ -15,6 +15,7 @@ import {
   sweepStaleStaging,
   type UserFileInfo,
 } from '../storage/index.js';
+import type { Suggestions } from '../suggestions/index.js';
 import { QuestionRegistry, type SubscribeOptions, type Subscription } from './registry.js';
 import { type QuestionJob, type RunnerDeps, runAttempt } from './runner.js';
 import { agentQuestion, namingQuestion, questionTitle } from './title.js';
@@ -42,6 +43,8 @@ export interface QuestionsOptions {
   timings?: Partial<QuestionTimings>;
   log?: QuestionLogger;
   hooks?: QuestionHooks;
+  /** Suggested prompts generated at save, in parallel with naming. None when absent. */
+  suggestions?: Suggestions;
 }
 
 /** What `POST /trees/:tree/questions` prepared before registering the question. */
@@ -101,6 +104,7 @@ export class Questions {
   private readonly held: HeldFiles;
   private readonly log: QuestionLogger;
   private readonly hooks: QuestionHooks;
+  private readonly suggestions: Suggestions | undefined;
   private readonly jobs = new Map<string, QuestionJob>();
   private readonly preparing = new Map<string, Preparation>();
   private closed = false;
@@ -113,6 +117,7 @@ export class Questions {
     this.timings = { ...DEFAULT_QUESTION_TIMINGS, ...options.timings };
     this.log = options.log ?? silentLogger;
     this.hooks = options.hooks ?? {};
+    this.suggestions = options.suggestions;
     this.held = createHeldFiles({ root: options.heldDir });
     this.registry = new QuestionRegistry({
       timings: this.timings,
@@ -311,6 +316,7 @@ export class Questions {
       timings: this.timings,
       log: this.log,
       hooks: this.hooks,
+      suggestions: this.suggestions,
     };
   }
 

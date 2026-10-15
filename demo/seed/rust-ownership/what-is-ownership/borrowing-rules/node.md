@@ -1,6 +1,7 @@
 ---
 created: 2026-09-20T09:30:00.000Z
 model: claude-opus-5-5
+suggestions: [{"text":"How do lifetimes relate to borrowing?","up":0},{"text":"Can I borrow mutably inside a loop?","up":0},{"text":"How do slices borrow part of a String?","up":1},{"text":"What happens to ownership when I pass a value to a function?","up":1}]
 ---
 <!-- otago:user -->
 How do references and borrowing work?

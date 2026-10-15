@@ -6,7 +6,7 @@
   "contracts": {
     "owner": "server",
     "generated": true,
-    "path": ".claude/features/clickable-citations/contracts"
+    "path": ".claude/features/archive/15-10-2026/clickable-citations/contracts"
   },
   "projects": [
     {
@@ -33,5 +33,7 @@
       "role": "client",
       "stage": "implemented"
     }
-  ]
+  ],
+  "archived": "2026-10-15T12:21:15Z",
+  "archived_to": ".claude/features/archive/15-10-2026/clickable-citations"
 }

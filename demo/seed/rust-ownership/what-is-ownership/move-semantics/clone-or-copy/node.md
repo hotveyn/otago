@@ -1,6 +1,7 @@
 ---
 created: 2026-09-20T09:20:00.000Z
 model: claude-sonnet-5
+suggestions: [{"text":"Which standard types implement Copy?","up":0},{"text":"Show me how to return ownership from a function","up":1},{"text":"How do slices borrow part of a String?","up":2}]
 ---
 <!-- otago:user -->
 When should I clone, and why do integers not move?

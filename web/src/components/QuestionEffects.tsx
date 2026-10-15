@@ -63,25 +63,36 @@ export function QuestionEffects({ url, navigate }: QuestionEffectsProps) {
         const text = store.getState().streams[question.id]?.text;
         if (text !== undefined) seedDoneChain(queryClient, question, text);
       }
-      void queryClient
-        .invalidateQueries({ queryKey: keys.tree(question.tree) })
-        .catch(() => undefined)
-        .then(() => {
-          const state = store.getState();
-          if (state.questions[question.id]?.status !== 'done') return;
-          // Follow before the ack publishes, so the panel never shows an empty exchange.
-          const patch = reconcileFocus(live(), {
-            ...state,
-            acked: { ...state.acked, [question.id]: true },
-          });
-          if (patch) navigate(patch, true);
-          store.ack(question.id);
+      // Suggestions too: the new node makes its text "used" on the server. Awaited before the
+      // ack, which stops hiding the clicked suggestion, so it never flickers back.
+      void Promise.all([
+        queryClient
+          .invalidateQueries({ queryKey: keys.tree(question.tree) })
+          .catch(() => undefined),
+        queryClient
+          .invalidateQueries({ queryKey: keys.treeSuggestions(question.tree) })
+          .catch(() => undefined),
+      ]).then(() => {
+        const state = store.getState();
+        if (state.questions[question.id]?.status !== 'done') return;
+        // Follow before the ack publishes, so the panel never shows an empty exchange.
+        const patch = reconcileFocus(live(), {
+          ...state,
+          acked: { ...state.acked, [question.id]: true },
         });
+        if (patch) navigate(patch, true);
+        store.ack(question.id);
+      });
     };
 
     const onRemoved = (event: Extract<LifecycleEvent, { type: 'removed' }>) => {
-      if (event.local) return;
       const question = event.question;
+      // Its suggestion is shown again, unless the server now reports it as used.
+      if (question && event.reason !== 'restart')
+        void queryClient
+          .invalidateQueries({ queryKey: keys.treeSuggestions(question.tree) })
+          .catch(() => undefined);
+      if (event.local) return;
       if (event.reason === 'restart') {
         if (question && isRunning(question)) lostOnRestart += 1;
         else if (question && focusedIn(live(), question.id) !== null)

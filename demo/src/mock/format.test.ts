@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { parseNodeFile, parseTreeFile, serializeNodeFile, serializeTreeFile } from './format';
+import { setSuggestionsLine } from '../../../server/src/storage/suggestions';
+import {
+  type NodeFile,
+  parseNodeFile,
+  parseTreeFile,
+  serializeNodeFile,
+  serializeTreeFile,
+  spliceSuggestions,
+} from './format';
 
 describe('format', () => {
   it('round-trips tree.md, quoting titles YAML would misread', () => {
@@ -34,5 +42,114 @@ describe('format', () => {
     expect(() => parseNodeFile('---\ncreated: 2026-01-01T00:00:00.000Z\n---\ntext')).toThrow(
       /markers/,
     );
+  });
+});
+
+describe('format: suggestions', () => {
+  const base: NodeFile = {
+    created: '2026-01-01T00:00:00.000Z',
+    model: 'claude-opus-5-5',
+    user: 'Q?',
+    assistant: 'A.',
+  };
+  const PRE_FEATURE =
+    '---\ncreated: 2026-01-01T00:00:00.000Z\nmodel: claude-opus-5-5\n---\n<!-- otago:user -->\nQ?\n\n<!-- otago:assistant -->\nA.\n';
+  const withLine = (value: string) =>
+    PRE_FEATURE.replace('model: claude-opus-5-5\n', `model: claude-opus-5-5\n${value}\n`);
+
+  it('keeps old nodes as they are: no property, byte-identical output', () => {
+    const parsed = parseNodeFile(PRE_FEATURE);
+    expect(parsed).toEqual(base);
+    expect('suggestions' in parsed).toBe(false);
+    expect(serializeNodeFile(base)).toBe(PRE_FEATURE);
+    expect(serializeNodeFile(parsed)).toBe(PRE_FEATURE);
+  });
+
+  it('reads a stored empty list', () => {
+    expect(parseNodeFile(withLine('suggestions: []')).suggestions).toEqual([]);
+  });
+
+  it('round-trips texts with colons, hashes, quotes, backslashes and Cyrillic', () => {
+    const suggestions = [
+      { text: 'Rust: why?', up: 0 },
+      { text: 'Item #2 "quoted" it\'s', up: 0 },
+      { text: 'Path C:\\dir\\file', up: 1 },
+      { text: 'Перейдём к главе 2', up: 2 },
+    ];
+    const node = { ...base, suggestions };
+    expect(parseNodeFile(serializeNodeFile(node))).toEqual(node);
+  });
+
+  it('keeps U+2028 out of the line: escaped on write, sanitized to a space on read', () => {
+    const text = serializeNodeFile({ ...base, suggestions: [{ text: 'a\u2028b', up: 0 }] });
+    const line = text.split('\n').find((l) => l.startsWith('suggestions:')) ?? '';
+    expect(line).not.toContain('\u2028');
+    expect(line).toContain('\\u2028');
+    expect(parseNodeFile(text).suggestions).toEqual([{ text: 'a b', up: 0 }]);
+  });
+
+  it('treats every other value as MISSING', () => {
+    for (const value of [
+      'suggestions: null',
+      'suggestions: "[]"',
+      "suggestions: '[]'",
+      'suggestions: {}',
+      'suggestions: [{"text":',
+      'suggestions:',
+      'suggestions:\n  - text: x\n    up: 0',
+    ]) {
+      const parsed = parseNodeFile(withLine(value));
+      expect(parsed.suggestions, value).toBeUndefined();
+      expect('suggestions' in parsed, value).toBe(false);
+    }
+  });
+
+  it('drops invalid items, keeps the list stored and ignores unknown keys', () => {
+    const value = JSON.stringify([
+      { text: 'Good', up: 0, kind: 'future' },
+      { text: '', up: 0 },
+      { text: 'Neg', up: -1 },
+      { text: 'Frac', up: 1.5 },
+      { up: 0 },
+      'bare',
+      { text: '  "Quoted"  ', up: 1 },
+    ]);
+    expect(parseNodeFile(withLine(`suggestions: ${value}`)).suggestions).toEqual([
+      { text: 'Good', up: 0 },
+      { text: 'Quoted', up: 1 },
+    ]);
+    expect(parseNodeFile(withLine('suggestions: [{"text":""}]')).suggestions).toEqual([]);
+  });
+
+  it('writes through setSuggestionsLine: the line is the last frontmatter line', () => {
+    const suggestions = [{ text: 'Next?', up: 0 }];
+    const text = serializeNodeFile({ ...base, suggestions });
+    expect(text).toBe(setSuggestionsLine(serializeNodeFile(base), suggestions));
+    expect(text).toBe(withLine('suggestions: [{"text":"Next?","up":0}]'));
+    const lines = text.split('\n');
+    expect(lines[lines.indexOf('---', 1) - 1]).toBe('suggestions: [{"text":"Next?","up":0}]');
+    expect(serializeNodeFile({ ...base, suggestions: [] })).toBe(withLine('suggestions: []'));
+  });
+
+  it('splices a later write and keeps every other byte', () => {
+    const raw = PRE_FEATURE.replace('A.\n', 'A.\n\n  trailing  \n');
+    const spliced = spliceSuggestions(raw, [{ text: 'X', up: 0 }]);
+    expect(spliced).toBe(raw.replace('---\n<!--', 'suggestions: [{"text":"X","up":0}]\n---\n<!--'));
+    expect(spliceSuggestions(spliced, [])).toBe(
+      raw.replace('---\n<!--', 'suggestions: []\n---\n<!--'),
+    );
+  });
+
+  it('reads the server-written form (gray-matter frontmatter + spliced line)', () => {
+    const server =
+      '---\ncreated: \'2026-01-01T00:00:00.000Z\'\nmodel: claude-opus-5-5\nsuggestions: [{"text":"Перейдём к главе 2","up":1},{"text":"Что такое заимствование?","up":0}]\n---\n<!-- otago:user -->\nQ?\n\n<!-- otago:assistant -->\nA.\n';
+    expect(parseNodeFile(server)).toEqual({
+      ...base,
+      suggestions: [
+        { text: 'Перейдём к главе 2', up: 1 },
+        { text: 'Что такое заимствование?', up: 0 },
+      ],
+    });
+    expect(parseNodeFile(server.replaceAll('\n', '\r\n')).suggestions).toHaveLength(2);
   });
 });

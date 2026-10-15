@@ -2,7 +2,8 @@
  * Mirrors .claude/features/rich-answers/contracts and
  * .claude/features/chat-file-attachments/contracts and
  * .claude/features/rename-trees-nodes/contracts and
- * .claude/features/parallel-questions/contracts (server owns the shape).
+ * .claude/features/parallel-questions/contracts and
+ * .claude/features/suggested-prompts/contracts (server owns the shape).
  * Hand-maintained: there is no codegen in this repo.
  *
  * Node ids (`HierarchyNode.id`, `ChainNode.id`, `parentId`, …) are `/`-joined folder names.
@@ -351,12 +352,56 @@ export type QuestionErrorCode =
   /** 409 on retry: the question is running, done, or already being retried. */
   | 'question_not_failed';
 
+// ---------------------------------------------------------------------------
+// Suggested prompts. Mirrors .claude/features/suggested-prompts/contracts/suggestions.ts,
+// suggestions-api.ts and errors.ts.
+// ---------------------------------------------------------------------------
+
+/** One suggested follow-up question (already resolved by the server). */
+export interface Suggestion {
+  /** Button label AND the question text to send, verbatim. Single line, NFC, ≤ 200 graphemes. */
+  text: string;
+  /** Node to ask from (`parentId` of the question): the viewed node, or an ancestor (never `""`). */
+  target: string;
+  /** Levels above the viewed node (`0` = own). Inherited ⇔ `up > 0`. */
+  up: number;
+}
+
+/** `GET`/`POST /trees/:tree/suggestions`: the node has a stored list (may be `[]`). */
+export interface SuggestionsReady {
+  /** Echo of the requested node id (NFC). */
+  node: string;
+  state: 'ready';
+  /** Own first, then inherited; invalid and "used" items already removed. */
+  suggestions: Suggestion[];
+}
+
+/** `GET /trees/:tree/suggestions`: `node.md` has no stored list yet (POST to generate). */
+export interface SuggestionsMissing {
+  node: string;
+  state: 'missing';
+  suggestions: [];
+}
+
+export type SuggestionsResponse = SuggestionsReady | SuggestionsMissing;
+
+/** 502 of `POST /trees/:tree/suggestions`: the generation failed (retried on the next open). */
+export type SuggestionErrorCode = 'suggestions_failed';
+
 /** JSON body of every non-2xx `/api/*` response. */
 export interface ErrorBody {
   /** Human-readable, safe to show. Upload errors name the original file name. */
   error: string;
-  /** 409 lock conflicts, 404 reasons, message-upload rejections and question errors. */
-  code?: ConflictCode | MessageUploadErrorCode | NotFoundCode | QuestionErrorCode;
+  /**
+   * 409 lock conflicts, 404 reasons, message-upload rejections, question errors and the 502
+   * of a failed suggestion generation.
+   */
+  code?:
+    | ConflictCode
+    | MessageUploadErrorCode
+    | NotFoundCode
+    | QuestionErrorCode
+    | SuggestionErrorCode;
   /**
    * 400 `Invalid input` (schema issues), 409 `tree_busy_streaming` (`TreeBusyDetails`),
    * 409 `question_finished` (`QuestionFinishedDetails`).

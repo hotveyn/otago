@@ -5,16 +5,24 @@ import {
   type AttachmentStaging,
   buildAskOptions,
   buildNamingPrompt,
+  buildSuggestPrompt,
   buildSystemPrompt,
   buildUserPrompt,
   DENIED_TOOLS,
   fallbackNodeName,
+  headTailExcerpt,
   NAMING_EXCERPT_MAX_CHARS,
   NAMING_PROMPT,
   NAMING_SYSTEM_PROMPT,
   namingExcerpt,
+  parseSuggestReply,
+  proseExcerpt,
   SAVE_ATTACHMENT_TOOL_ID,
   STAGING_DENY_REASON,
+  SUGGEST_ANCESTOR_ANSWER,
+  SUGGEST_CURRENT_ANSWER,
+  SUGGEST_PROMPT,
+  SUGGEST_SYSTEM_PROMPT,
   SYSTEM_RULES,
   sanitizeNodeName,
   TRASH_DENY_REASON,
@@ -360,6 +368,122 @@ describe('naming prompt', () => {
     const inside = prompt.split('<question>\n')[1]?.split('\n</question>')[0] ?? '';
     expect(inside).toBe('é'.normalize('NFD').repeat(500));
     expect(prompt).toContain('<answer>\n(no prose)\n</answer>');
+  });
+});
+
+describe('suggestion prompt', () => {
+  const words = (prefix: string, count: number) =>
+    Array.from({ length: count }, (_, i) => `${prefix}${i}`).join(' ');
+
+  it('proseExcerpt is the naming excerpt with another cap', () => {
+    const answer = 'Text [^1] with `code`.\n\n```js\nx\n```\n\n[^1]: sources/a.md:1-2';
+    expect(proseExcerpt(answer, 1_500)).toBe(namingExcerpt(answer));
+    expect(proseExcerpt(words('w', 50), 12)).toBe('w0 w1 w2 w3');
+  });
+
+  it('head/tail excerpt keeps the end of a long answer', () => {
+    const short = 'Short answer.';
+    expect(headTailExcerpt(short, SUGGEST_CURRENT_ANSWER)).toBe(short);
+    const answer = `${words('начало', 800)}\n\nДалее разберём главу 2 и главу 3.`;
+    const excerpt = headTailExcerpt(answer, { head: 100, tail: 200 });
+    const [head, tail] = excerpt.split(' … ');
+    expect(head?.length).toBeLessThanOrEqual(100);
+    expect(tail?.length).toBeLessThanOrEqual(200);
+    expect(answer.startsWith(head ?? '')).toBe(true);
+    expect(tail?.endsWith('Далее разберём главу 2 и главу 3.')).toBe(true);
+    // Word boundaries on both sides.
+    expect(tail?.startsWith('начало')).toBe(true);
+    expect(answer.includes(` ${tail?.split(' ')[0]} `)).toBe(true);
+    // No spaces: grapheme-safe hard cuts.
+    const emoji = headTailExcerpt('👍'.repeat(500), { head: 10, tail: 10 });
+    expect(emoji).toBe(`${'👍'.repeat(5)} … ${'👍'.repeat(5)}`);
+  });
+
+  it('has the rules, the latest exchange and no empty blocks', () => {
+    expect(SUGGEST_SYSTEM_PROMPT).toContain('Output only JSON');
+    for (const phrase of [
+      'If nothing is obvious, return an empty list',
+      "language and script of the latest answer's prose",
+      'never rewrite it',
+      'At most 5 items',
+      '{"suggestions":[{"text":"…"},{"keep":2}]}',
+    ]) {
+      expect(SUGGEST_PROMPT).toContain(phrase);
+    }
+    const prompt = buildSuggestPrompt({
+      ancestors: [],
+      current: { user: '  Что такое заимствование?  ', assistant: '```\ncode\n```' },
+      candidates: [],
+    });
+    expect(prompt).toBe(
+      `${SUGGEST_PROMPT}\n\n<latest>\n<user>\nЧто такое заимствование?\n</user>\n<assistant>\n(no prose)\n</assistant>\n</latest>`,
+    );
+    expect(prompt).not.toContain('<transcript>');
+    expect(prompt).not.toContain('<earlier-suggestions>');
+  });
+
+  it('includes the nearest 4 ancestors oldest first and numbers candidates from 1', () => {
+    const ancestors = Array.from({ length: 6 }, (_, i) => ({
+      id: `a${i}`,
+      user: `question ${i}`,
+      assistant: i === 5 ? `${words('x', 600)} tail-marker` : `answer ${i}`,
+    }));
+    const prompt = buildSuggestPrompt({
+      ancestors,
+      current: { user: 'Глава 1', assistant: 'Глава 1 — это начало.' },
+      candidates: [
+        { text: 'Глава 2', source: 'план', origin: 0 },
+        { text: 'Deeper', source: 'план/глава-1', origin: 1 },
+      ],
+    });
+    expect(prompt).not.toContain('question 0');
+    expect(prompt).not.toContain('question 1');
+    const order = ['question 2', 'question 3', 'question 4', 'question 5', '<latest>'].map((part) =>
+      prompt.indexOf(part),
+    );
+    expect(order.every((index, i) => index > (order[i - 1] ?? -1))).toBe(true);
+    // Ancestor answers get the short head/tail cut.
+    const last = prompt
+      .split('<user>\nquestion 5\n</user>\n<assistant>\n')[1]
+      ?.split('\n</assistant>')[0];
+    expect(last?.length).toBeLessThanOrEqual(
+      SUGGEST_ANCESTOR_ANSWER.head + SUGGEST_ANCESTOR_ANSWER.tail + 3,
+    );
+    expect(last?.endsWith('tail-marker')).toBe(true);
+    expect(prompt).toContain(
+      '<earlier-suggestions>\n1. Глава 2 (offered at: план)\n2. Deeper (offered at: глава-1)\n</earlier-suggestions>',
+    );
+  });
+});
+
+describe('parseSuggestReply', () => {
+  it('reads a fenced reply, a bare array and {suggestions}', () => {
+    expect(parseSuggestReply('```json\n{"suggestions":[{"text":"a"},{"keep":2}]}\n```', 2)).toEqual(
+      [{ text: 'a' }, { keep: 1 }],
+    );
+    expect(parseSuggestReply('Here you go: [{"text":"a"}, "b"] done', 0)).toEqual([
+      { text: 'a' },
+      { text: 'b' },
+    ]);
+    expect(parseSuggestReply('{"suggestions":[]}', 0)).toEqual([]);
+    expect(parseSuggestReply('```\n[]\n```', 0)).toEqual([]);
+  });
+
+  it('drops out-of-range keeps and bad items', () => {
+    expect(
+      parseSuggestReply(
+        '{"suggestions":[{"keep":0},{"keep":3},{"keep":1.5},{"keep":"1"},{"keep":1},{"text":5},null,7,{"text":"ok"}]}',
+        2,
+      ),
+    ).toEqual([{ keep: 0 }, { text: 'ok' }]);
+  });
+
+  it('throws on garbage or without an array', () => {
+    expect(() => parseSuggestReply('no json here', 0)).toThrow();
+    expect(() => parseSuggestReply('{"suggestions": [', 0)).toThrow();
+    expect(() => parseSuggestReply('{}', 0)).toThrow();
+    expect(() => parseSuggestReply('{"suggestions":"a"}', 0)).toThrow();
+    expect(() => parseSuggestReply('"just a string"', 0)).toThrow();
   });
 });
 

@@ -41,7 +41,21 @@ export async function readHierarchy(treeDir: string): Promise<HierarchyNode[]> {
   return readChildren(treeDir, '');
 }
 
-async function readChildren(dir: string, parentId: string): Promise<HierarchyNode[]> {
+/** A live child node folder (see `liveChildEntries`). */
+export interface LiveChildEntry {
+  id: string;
+  name: string;
+  /** Absolute folder path (the on-disk name may be a non-NFC twin of `name`). */
+  dir: string;
+  node: NodeFile;
+}
+
+/**
+ * Live child nodes of the folder `dir` (node `parentId`), in folder-name order: node names
+ * only, reserved names skipped, `node.md` required, NFC/NFD (and fold) twins collapsed to the
+ * first one. Soft-deleted and temp folders are not node names, so they never show up.
+ */
+export async function liveChildEntries(dir: string, parentId: string): Promise<LiveChildEntry[]> {
   const entries = (await readdir(dir, { withFileTypes: true }))
     .filter((entry) => entry.isDirectory())
     .map((entry) => ({ raw: entry.name, name: entry.name.normalize('NFC') }))
@@ -52,7 +66,7 @@ async function readChildren(dir: string, parentId: string): Promise<HierarchyNod
         (a.raw < b.raw ? -1 : a.raw > b.raw ? 1 : 0),
     );
   const seen = new Set<string>();
-  const nodes: HierarchyNode[] = [];
+  const children: LiveChildEntry[] = [];
   for (const { raw, name } of entries) {
     if (!isNodeName(name) || isReservedName(parentId, name)) continue;
     // NFC/NFD twins (or fold twins) on a normalization-sensitive file system: keep the first.
@@ -62,12 +76,19 @@ async function readChildren(dir: string, parentId: string): Promise<HierarchyNod
     const node = await readNodeFileIfExists(nodeDir);
     if (!node) continue;
     seen.add(key);
-    const id = joinId(parentId, name);
+    children.push({ id: joinId(parentId, name), name, dir: nodeDir, node });
+  }
+  return children;
+}
+
+async function readChildren(dir: string, parentId: string): Promise<HierarchyNode[]> {
+  const nodes: HierarchyNode[] = [];
+  for (const child of await liveChildEntries(dir, parentId)) {
     nodes.push({
-      id,
-      name,
-      created: node.created,
-      children: await readChildren(nodeDir, id),
+      id: child.id,
+      name: child.name,
+      created: child.node.created,
+      children: await readChildren(child.dir, child.id),
     });
   }
   return nodes.sort((a, b) => a.created.localeCompare(b.created) || a.name.localeCompare(b.name));

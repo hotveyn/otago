@@ -58,5 +58,14 @@ const name = await agent.name({
   signal: controller.signal,
 });
 console.log(`--- node name: ${name}`);
+// Suggested follow-ups (raw picks, before the server's finalization); no candidates here.
+const picks = await agent.suggest({
+  ancestors: chain.map((node) => ({ id: node.id, user: node.user, assistant: node.assistant })),
+  current: { user: question, assistant: answer },
+  candidates: [],
+  model: config.models.suggest,
+  signal: controller.signal,
+});
+console.log(`--- suggestions: ${JSON.stringify(picks)}`);
 console.log(`--- attachments: ${JSON.stringify(await staging.list())}`);
 await staging.discard();

@@ -27,6 +27,10 @@ interface ChatThreadProps {
    * when there is no current exchange.
    */
   scrollKey: unknown;
+  /** Shown under the last exchange while nothing is in flight (suggested questions). */
+  tail?: ReactNode;
+  /** Changes when `tail` grows, so a reader at the bottom keeps seeing the end. */
+  tailKey?: unknown;
 }
 
 function formatDate(iso: string, locale: string): string {
@@ -62,6 +66,8 @@ export function ChatThread({
   error,
   scrollerRef,
   scrollKey,
+  tail,
+  tailKey,
 }: ChatThreadProps) {
   const { i18n } = useTranslation('chat');
   const stickToBottom = useRef(true);
@@ -104,7 +110,7 @@ export function ChatThread({
       stickToBottom.current = true;
     }
     if (stickToBottom.current) element.scrollTop = element.scrollHeight;
-  }, [messages, key, stream?.text.length, stream?.attachments.length, status]);
+  }, [messages, key, stream?.text.length, stream?.attachments.length, status, tailKey]);
 
   return (
     <div className="chat-scroll" ref={scrollerRef} onScroll={onScroll}>
@@ -114,7 +120,7 @@ export function ChatThread({
         <div className="chat-empty">{empty}</div>
       ) : (
         <div className="thread">
-          {messages.map((node) => (
+          {messages.map((node, index) => (
             <Exchange
               key={node.id}
               nodeId={node.id}
@@ -127,6 +133,7 @@ export function ChatThread({
                 streaming: null,
               }}
               current={node.id === currentId}
+              footer={!inFlight && index === messages.length - 1 ? tail : undefined}
               files={
                 node.files.length > 0 ? (
                   <UserFileList treeId={treeId} nodeId={node.id} files={node.files} />

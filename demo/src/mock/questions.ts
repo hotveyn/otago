@@ -4,6 +4,8 @@
  * VFS like the server's `createNode`. Events have the shapes of the SSE contract
  * (`web/src/api/types.ts`) and reach the store through `connection.ts`.
  * The registry lives in memory: a page reload loses running questions (a "server restart").
+ * Suggestions are generated in parallel with naming (`suggestions.ts`); they never change a
+ * question's status or events.
  */
 import { collapseWhitespace, firstLine, truncateGraphemes } from '../../../server/src/text';
 import type {
@@ -29,6 +31,7 @@ import { DEMO_MAX_FILE_BYTES, fileInfoOf, MAX_MESSAGE_FILES, userFileNameOf } fr
 import type { TreeLocks } from './locks';
 import { loremAnswer, streamTokens } from './lorem';
 import { isSameOrDescendant, toNodeName, USER_FILES_DIR, uniqueFileName } from './names';
+import type { PendingSuggestions, Suggestions } from './suggestions';
 import type { StoredFile, TreeStore } from './trees';
 
 export type Schedule = (fn: () => void, ms: number) => () => void;
@@ -41,6 +44,7 @@ export const defaultSchedule: Schedule = (fn, ms) => {
 export interface QuestionsOptions {
   trees: TreeStore;
   models: ModelsInfo;
+  suggestions: Suggestions;
   now?: () => number;
   random?: () => number;
   schedule?: Schedule;
@@ -66,6 +70,8 @@ interface Entry {
   release: (() => void) | null;
   cancelRun: (() => void) | null;
   cancelExpiry: (() => void) | null;
+  /** Suggestion generation started at `naming`, until the commit adopts or drops it. */
+  pendingSuggestions: PendingSuggestions | null;
 }
 
 const MAX_TEXT_LENGTH = 50_000;
@@ -90,6 +96,7 @@ export class Questions {
   private readonly listeners = new Set<Listener>();
   private readonly trees: TreeStore;
   private readonly models: ModelsInfo;
+  private readonly suggestions: Suggestions;
   private readonly now: () => number;
   private readonly random: () => number;
   private readonly schedule: Schedule;
@@ -99,6 +106,7 @@ export class Questions {
   constructor(options: QuestionsOptions) {
     this.trees = options.trees;
     this.models = options.models;
+    this.suggestions = options.suggestions;
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
     this.schedule = options.schedule ?? defaultSchedule;
@@ -210,6 +218,7 @@ export class Questions {
         release,
         cancelRun: null,
         cancelExpiry: null,
+        pendingSuggestions: null,
       };
       this.entries.set(id, entry);
       this.emitQuestion(entry);
@@ -363,6 +372,14 @@ export class Questions {
         entry.cancelRun = this.schedule(tick, 30 + Math.floor(this.random() * 40));
         return;
       }
+      // In parallel with naming, while the shared lock still holds the chain in place.
+      this.dropSuggestions(entry);
+      entry.pendingSuggestions = this.suggestions.forAnswer({
+        treeId: entry.info.tree,
+        parentId: entry.info.parentId,
+        question: this.namingQuestion(entry),
+        answer: live.answer.trim(),
+      });
       this.setStatus(entry, 'naming');
       entry.cancelRun = this.schedule(
         () => this.commit(entry, attempt),
@@ -403,8 +420,12 @@ export class Questions {
   private commit(entry: Entry, attempt: number): void {
     if (!this.isCurrent(entry, entry.info.id, attempt) || !entry.live) return;
     const info = entry.info as RunningQuestion;
-    const fileNames = entry.files.map((file) => file.name);
-    const namingQuestion = info.text || `Attached files: ${fileNames.join(', ')}`;
+    const namingQuestion = this.namingQuestion(entry);
+    // The commit never waits for suggestions: with the list when ready, else without it.
+    const pending = entry.pendingSuggestions;
+    const ready = pending?.peek();
+    const created = new Date(this.now()).toISOString();
+    const assistant = entry.live.answer.trim();
     let nodeId: string;
     try {
       nodeId = this.trees.createNode(
@@ -412,10 +433,11 @@ export class Questions {
         info.parentId,
         toNodeName(namingQuestion, { maxWords: 4 }),
         {
-          created: new Date(this.now()).toISOString(),
+          created,
           model: info.model,
           user: info.text,
-          assistant: entry.live.answer.trim(),
+          assistant,
+          ...(Array.isArray(ready) && { suggestions: ready }),
         },
         entry.files,
       );
@@ -426,6 +448,11 @@ export class Questions {
       });
       return;
     }
+    // Still running: written to the new node later (verified against what was just written).
+    if (pending && ready === undefined) {
+      pending.adopt(info.tree, nodeId, { created, user: info.text, assistant });
+    }
+    entry.pendingSuggestions = null;
     this.releaseLock(entry);
     entry.cancelRun = null;
     const { status: _status, ...base } = info;
@@ -446,6 +473,7 @@ export class Questions {
   private fail(entry: Entry, error: QuestionError): void {
     entry.cancelRun?.();
     entry.cancelRun = null;
+    this.dropSuggestions(entry);
     this.releaseLock(entry);
     const { status: _status, ...base } = entry.info as RunningQuestion;
     const failed: FailedQuestion = {
@@ -478,6 +506,7 @@ export class Questions {
   private remove(entry: Entry, reason: QuestionRemovedReason): void {
     entry.cancelRun?.();
     entry.cancelExpiry?.();
+    this.dropSuggestions(entry);
     this.releaseLock(entry);
     this.entries.delete(entry.info.id);
     const { info } = entry;
@@ -490,6 +519,18 @@ export class Questions {
         ...(info.status === 'done' && { nodeId: info.nodeId }),
       },
     });
+  }
+
+  /** Question text as naming sees it (files-only: the file names). */
+  private namingQuestion(entry: Entry): string {
+    const fileNames = entry.files.map((file) => file.name);
+    return entry.info.text || `Attached files: ${fileNames.join(', ')}`;
+  }
+
+  /** Abort a suggestion generation that was not adopted by a commit. */
+  private dropSuggestions(entry: Entry): void {
+    entry.pendingSuggestions?.abort();
+    entry.pendingSuggestions = null;
   }
 
   private releaseLock(entry: Entry): void {

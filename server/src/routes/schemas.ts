@@ -25,3 +25,9 @@ export const treeInput = z.object({
 export const treePatch = treeInput.partial().refine((patch) => Object.keys(patch).length > 0, {
   message: 'Nothing to update',
 });
+
+/** `GET /trees/:tree/suggestions?node=` (a saved node, not `""`; checked by the service). */
+export const suggestionsQuery = z.object({ node: nodeId });
+
+/** `POST /trees/:tree/suggestions` body. */
+export const suggestionsBody = z.object({ node: nodeId });

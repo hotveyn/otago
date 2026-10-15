@@ -1,6 +1,7 @@
 ---
 created: 2026-09-20T09:12:00.000Z
 model: claude-opus-5-5
+suggestions: [{"text":"Show me how to return ownership from a function","up":0},{"text":"How do references and borrowing work?","up":1},{"text":"How do slices borrow part of a String?","up":1}]
 ---
 <!-- otago:user -->
 Why can't I use a String after assigning it to another variable?

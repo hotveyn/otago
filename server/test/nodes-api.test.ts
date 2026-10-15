@@ -661,6 +661,9 @@ describe('structural ops keep retained questions consistent', () => {
     async name(input) {
       return input.question;
     },
+    async suggest() {
+      return [];
+    },
   };
 
   beforeEach(async () => {

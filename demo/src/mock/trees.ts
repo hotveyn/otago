@@ -3,17 +3,25 @@
  * mirroring `server/src/storage/{trees,nodes,sources,attachments,user-files}.ts`.
  * Every method is synchronous and runs in one VFS transaction, so it is atomic.
  */
+
+import {
+  resolveSuggestions,
+  type StoredSuggestion,
+  type SuggestionChainNode,
+  suggestionKey,
+} from '../../../server/src/storage/suggestions';
 import type {
   AttachmentInfo,
   ChainNode,
   FileFolder,
   HierarchyNode,
   SourceInfo,
+  SuggestionsResponse,
   TreeMeta,
   UpdateTreeResult,
   UserFileInfo,
 } from '../../../web/src/api/types';
-import { badRequest, notFound, storageFull, treeNotFound } from './errors';
+import { badRequest, nodeNotFound, notFound, storageFull, treeNotFound } from './errors';
 import {
   assertSourceName,
   fileContentTypeOf,
@@ -28,6 +36,7 @@ import {
   parseTreeFile,
   serializeNodeFile,
   serializeTreeFile,
+  spliceSuggestions,
 } from './format';
 import {
   ATTACHMENTS_DIR,
@@ -61,6 +70,23 @@ export interface FileContent {
   bytes: Uint8Array;
   contentType: string;
 }
+
+/** A chain node as suggestion generation and resolution need it. */
+export interface SuggestionRecord extends SuggestionChainNode {
+  created: string;
+  user: string;
+  assistant: string;
+}
+
+/** What a suggestion write is verified against: the node as the generation saw it. */
+export interface SuggestionSnapshot {
+  created: string;
+  user: string;
+  assistant: string;
+}
+
+/** Outcome of `writeSuggestions`. */
+export type SuggestionWrite = 'written' | 'stored' | 'gone' | 'changed';
 
 const byCreated = (a: { created: string; id: string }, b: { created: string; id: string }) =>
   a.created.localeCompare(b.created) || a.id.localeCompare(b.id);
@@ -171,16 +197,25 @@ export class TreeStore {
   }
 
   private readChildren(treeId: string, parentId: string): HierarchyNode[] {
-    const dir = this.dirOf(treeId, parentId);
-    const nodes: HierarchyNode[] = [];
-    for (const name of this.vfs.listDirs(dir)) {
+    const nodes = this.liveChildren(treeId, parentId).map(({ id, name, node }) => ({
+      id,
+      name,
+      created: node.created,
+      children: this.readChildren(treeId, id),
+    }));
+    return nodes.sort((a, b) => a.created.localeCompare(b.created) || a.name.localeCompare(b.name));
+  }
+
+  /** Direct children that are nodes (trash `.deleted-*` and reserved folders never count). */
+  private liveChildren(treeId: string, parentId: string) {
+    const children: Array<{ id: string; name: string; node: NodeFile }> = [];
+    for (const name of this.vfs.listDirs(this.dirOf(treeId, parentId))) {
       if (!isNodeName(name) || isReservedName(parentId, name)) continue;
       const id = joinId(parentId, name);
       const node = this.readNodeFile(treeId, id);
-      if (!node) continue;
-      nodes.push({ id, name, created: node.created, children: this.readChildren(treeId, id) });
+      if (node) children.push({ id, name, node });
     }
-    return nodes.sort((a, b) => a.created.localeCompare(b.created) || a.name.localeCompare(b.name));
+    return children;
   }
 
   /** Nodes from the top-level ancestor down to `nodeId`. `""` → empty chain. */
@@ -189,8 +224,10 @@ export class TreeStore {
     const segments = nodeIdSegments(nodeId);
     return segments.map((name, i) => {
       const id = segments.slice(0, i + 1).join('/');
-      const node = this.readNodeFile(treeId, id);
-      if (!node) throw notFound(`Node not found: ${nodeId}`);
+      const stored = this.readNodeFile(treeId, id);
+      if (!stored) throw notFound(`Node not found: ${nodeId}`);
+      // The chain payload is unchanged: suggestions have their own resource.
+      const { suggestions: _suggestions, ...node } = stored;
       return {
         id,
         name,
@@ -208,9 +245,7 @@ export class TreeStore {
   }
 
   private assertNode(treeId: string, nodeId: string): void {
-    if (!this.nodeExists(treeId, nodeId)) {
-      throw notFound(`Node not found: ${nodeId}`, 'node_not_found');
-    }
+    if (!this.nodeExists(treeId, nodeId)) throw nodeNotFound(nodeId);
   }
 
   /** Create `parentId/<name>/` with `node.md` and the user files. Returns the new node id. */
@@ -381,6 +416,90 @@ export class TreeStore {
       subtree.map((oldId) => [oldId, newId + oldId.slice(id.length)]),
     );
     return { id: newId, name, renamed };
+  }
+
+  // --- Suggestions ------------------------------------------------------------------------
+
+  /** `GET /trees/:tree/suggestions?node=`: the resolved list, or `missing`. Pure read. */
+  suggestionsView(treeId: string, nodeId: string): SuggestionsResponse {
+    this.assertTree(treeId);
+    nodeIdSegments(nodeId);
+    if (nodeId === '') throw badRequest('The tree root has no suggestions');
+    this.assertNode(treeId, nodeId);
+    const records = this.suggestionChain(treeId, nodeId);
+    const used = this.usedKeys(
+      treeId,
+      records.map((record) => record.id),
+    );
+    const resolved = resolveSuggestions(records, used);
+    return resolved === 'missing'
+      ? { node: nodeId, state: 'missing', suggestions: [] }
+      : { node: nodeId, state: 'ready', suggestions: resolved };
+  }
+
+  /** Nodes from the top-level ancestor down to `nodeId` with their stored lists. `""` → `[]`. */
+  suggestionChain(treeId: string, nodeId: string): SuggestionRecord[] {
+    this.assertTree(treeId);
+    const segments = nodeIdSegments(nodeId);
+    return segments.map((_, i) => {
+      const id = segments.slice(0, i + 1).join('/');
+      const node = this.readNodeFile(treeId, id);
+      if (!node) throw nodeNotFound(nodeId);
+      const { created, user, assistant, suggestions } = node;
+      return { id, created, user, assistant, ...(suggestions && { suggestions }) };
+    });
+  }
+
+  /** Keys of the questions of each target's live children ("used" suggestions). */
+  usedKeys(treeId: string, targetIds: readonly string[]): Map<string, Set<string>> {
+    const used = new Map<string, Set<string>>();
+    for (const target of targetIds) {
+      if (used.has(target)) continue;
+      const keys = this.liveChildren(treeId, target).map(({ node }) => suggestionKey(node.user));
+      used.set(target, new Set(keys));
+    }
+    return used;
+  }
+
+  /**
+   * Verified write of a generated list. Checks and write run without yielding (JS is single
+   * threaded, every VFS call is synchronous), so they are atomic against moves, deletes and
+   * other writers. Never recreates a folder: a node that no longer resolves is `gone`.
+   * A full storage throws the 413 `ApiError` (rolled back).
+   */
+  writeSuggestions(
+    treeId: string,
+    nodeId: string,
+    snapshot: SuggestionSnapshot,
+    items: readonly StoredSuggestion[],
+  ): SuggestionWrite {
+    if (!isTreeId(treeId) || !this.vfs.isFile(joinPath(treeId, TREE_FILE))) return 'gone';
+    try {
+      if (nodeIdSegments(nodeId).length === 0) return 'gone';
+    } catch {
+      return 'gone';
+    }
+    const path = joinPath(this.dirOf(treeId, nodeId), NODE_FILE);
+    // Mandatory: `Vfs.write` creates missing parent folders.
+    if (!this.vfs.isFile(path)) return 'gone';
+    const raw = this.vfs.readText(path) ?? '';
+    let next: string;
+    try {
+      const node = parseNodeFile(raw);
+      if (
+        node.created !== snapshot.created ||
+        node.user !== snapshot.user ||
+        node.assistant !== snapshot.assistant
+      ) {
+        return 'changed';
+      }
+      if (node.suggestions !== undefined) return 'stored';
+      next = spliceSuggestions(raw, items);
+    } catch {
+      return 'changed';
+    }
+    this.mutate(() => this.vfs.writeText(path, next));
+    return 'written';
   }
 
   private readNodeFile(treeId: string, nodeId: string): NodeFile | null {

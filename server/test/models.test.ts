@@ -17,6 +17,7 @@ describe('model config', () => {
       available: ['claude-sonnet-5', 'claude-haiku-4-5', 'claude-opus-5-5'],
       answer: 'claude-opus-5-5',
       naming: 'claude-haiku-4-5',
+      suggest: 'claude-haiku-4-5',
     });
   });
 

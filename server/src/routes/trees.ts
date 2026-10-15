@@ -54,7 +54,9 @@ export const treeRoutes: FastifyPluginAsyncZod<RouteDeps> = async (
     { schema: { params: treeParams, querystring: z.object({ node: nodeId.default('') }) } },
     async (request) => {
       const dir = await existingTreeDir(treesDir, request.params.tree);
-      return { chain: await readChain(dir, request.query.node) };
+      const chain = await readChain(dir, request.query.node);
+      // Stored suggestions have their own resource; the chain payload stays unchanged.
+      return { chain: chain.map(({ suggestions: _, ...node }) => node) };
     },
   );
 };

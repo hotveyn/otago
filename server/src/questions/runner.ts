@@ -9,6 +9,7 @@ import {
   nodeDirOf,
   type PromptFile,
 } from '../storage/index.js';
+import type { PendingSuggestions, Suggestions } from '../suggestions/index.js';
 import type { QuestionRegistry } from './registry.js';
 import type {
   QuestionFailureCode,
@@ -55,6 +56,8 @@ export interface RunnerDeps {
   timings: QuestionTimings;
   log: QuestionLogger;
   hooks?: QuestionHooks;
+  /** Generates the node's suggested prompts in parallel with naming (never delays the commit). */
+  suggestions?: Suggestions;
 }
 
 class AttemptAborted extends Error {
@@ -111,6 +114,7 @@ export async function runAttempt(job: QuestionJob, deps: RunnerDeps): Promise<vo
   const timeout: AbortReason = 'timeout';
   const watchdog = setTimeout(() => controller.abort(timeout), timings.attemptTimeoutMs);
   watchdog.unref?.();
+  let suggestions: PendingSuggestions | undefined;
   try {
     let answer: Extract<AgentEvent, { type: 'done' }> | undefined;
     const events = agent.ask({
@@ -137,6 +141,14 @@ export async function runAttempt(job: QuestionJob, deps: RunnerDeps): Promise<vo
     await serverSide(() => staging.seal());
     throwIfAborted(signal);
     registry.setNaming(job.id, job.attempt);
+    // Runs alongside naming; the commit takes whatever is ready and never waits for it.
+    suggestions = deps.suggestions?.forAnswer({
+      treeDir: job.treeDir,
+      parentId: job.parentId,
+      question: job.namingQuestion,
+      answer: final.text,
+      signal,
+    });
 
     let name: string;
     try {
@@ -157,21 +169,34 @@ export async function runAttempt(job: QuestionJob, deps: RunnerDeps): Promise<vo
     throwIfAborted(signal);
     job.committing = true;
     clearTimeout(watchdog);
+    const created = new Date().toISOString();
+    let ready: ReturnType<PendingSuggestions['peek']>;
     const nodeId = await serverSide(async () => {
       await deps.hooks?.beforeCommit?.(job.id);
+      // Succeeded → stored with the node; failed or still running → missing for now.
+      ready = suggestions?.peek();
       return createNode(
         job.treeDir,
         job.parentId,
         name,
         {
-          created: new Date().toISOString(),
+          created,
           model: final.model,
           user: job.text,
           assistant: final.text,
+          ...(Array.isArray(ready) ? { suggestions: ready } : {}),
         },
         { stagingDir: staging.dir },
       );
     });
+    // Still running: the suggestion service writes the list into the committed node later.
+    if (suggestions && ready === undefined) {
+      suggestions.adopt(registry.get(job.id)?.tree ?? '', nodeId, {
+        created,
+        user: job.text,
+        assistant: final.text,
+      });
+    }
     // The node exists from here on: the question is done whatever happens next.
     // Renamed into the node: sweeps may consider the staging path again.
     staging.release();
@@ -181,6 +206,8 @@ export async function runAttempt(job: QuestionJob, deps: RunnerDeps): Promise<vo
     job.release();
     registry.complete(job.id, job.attempt, { nodeId, attachments, files });
   } catch (error) {
+    // Not committed: the node's suggestion generation has nothing to write into.
+    suggestions?.abort();
     await settleFailure(job, deps, error).catch((cause: unknown) =>
       deps.log.error(cause, `Could not tear down question ${job.id}`),
     );

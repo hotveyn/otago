@@ -108,6 +108,11 @@ export const chat = {
     firstRows_other: 'First {{shown}} of {{count}} rows',
     downloadFull: 'Download full file',
   },
+  suggestions: {
+    label: 'Suggested questions',
+    from: 'from <name>{{name}}</name>',
+    askUnder: 'Asks under {{target}}',
+  },
   citations: {
     heading: 'Sources',
     afterSave: 'Opens when the answer is saved',

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ApiError } from '../../../web/src/api/client';
 import type { HierarchyNode } from '../../../web/src/api/types';
-import { makeDemo } from './test-helpers';
+import { makeDemo, NODE, SMALL_SEED, scriptedSuggest } from './test-helpers';
 
 const ids = (nodes: HierarchyNode[]): string[] =>
   nodes.flatMap((node) => [node.id, ...ids(node.children)]);
@@ -177,5 +177,47 @@ describe('demo api: sources and urls', () => {
     expect(demo.urls.source('t', 'notes.md')).toBe(first);
     demo.vfs.transaction(() => demo.vfs.writeText('t/sources/notes.md', '# Changed\n'));
     expect(demo.urls.source('t', 'notes.md')).not.toBe(first);
+  });
+});
+
+describe('demo api: stored suggestions stay out of other payloads', () => {
+  const seed = {
+    ...SMALL_SEED,
+    't/a/node.md': NODE('A?', '2026-01-01T00:01:00.000Z', [{ text: 'Next?', up: 0 }]),
+    't/a/b/node.md': NODE('B?', '2026-01-01T00:02:00.000Z', []),
+  };
+
+  it('chain items have no suggestions property', async () => {
+    const { demo } = makeDemo({ seed });
+    const chain = await demo.api.getChain('t', 'a/b');
+    expect(chain.map((node) => node.id)).toEqual(['a', 'a/b']);
+    for (const node of chain) expect(node).not.toHaveProperty('suggestions');
+    expect(chain[0]).toMatchObject({ user: 'A?', assistant: 'Answer to A?' });
+  });
+
+  it('the hierarchy is unaffected by a suggestions line', async () => {
+    const { demo } = makeDemo({ seed });
+    const detail = await demo.api.getTree('t');
+    expect(ids(detail.nodes)).toEqual(['a', 'a/b', 'c']);
+    expect(detail.nodes[0]).toEqual({
+      id: 'a',
+      name: 'a',
+      created: '2026-01-01T00:01:00.000Z',
+      children: [{ id: 'a/b', name: 'b', created: '2026-01-01T00:02:00.000Z', children: [] }],
+    });
+  });
+
+  it('structural routes never get a 409 from a running suggestion generation', async () => {
+    const script = scriptedSuggest([{ picks: 'gate' }]);
+    const { demo } = makeDemo({ suggest: script.simulate });
+    const post = demo.api.generateSuggestions('t', 'c').catch((e: unknown) => e);
+    expect(demo.suggestions.inFlight()).toBe(1);
+    const { deleted } = await demo.api.deleteNodes('t', ['a/b']);
+    await demo.api.restoreNodes('t', Object.values(deleted));
+    await demo.api.moveNodes('t', ['a/b'], '');
+    await demo.api.renameNode('t', 'b', 'bee');
+    await demo.api.updateTree('t', { title: 'Renamed' });
+    script.calls[0]?.open([]);
+    expect(await post).toMatchObject({ status: 404, code: 'tree_not_found' });
   });
 });

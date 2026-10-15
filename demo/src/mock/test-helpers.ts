@@ -1,4 +1,10 @@
+import {
+  type StoredSuggestion,
+  type SuggestPick,
+  suggestionsLine,
+} from '../../../server/src/storage/suggestions';
 import { createDemo, type DemoOptions } from './demo';
+import type { SimulatedSuggestInput, SuggestSimulator } from './suggestions';
 import type { VfsStorage } from './vfs';
 
 /** In-memory storage; `failNextSave` simulates a full localStorage. */
@@ -22,8 +28,45 @@ export function memoryStorage(initial: string | null = null) {
   return storage;
 }
 
-export const NODE = (user: string, created: string) =>
-  `---\ncreated: ${created}\nmodel: claude-opus-5-5\n---\n<!-- otago:user -->\n${user}\n\n<!-- otago:assistant -->\nAnswer to ${user}\n`;
+/** A node.md; `suggestions` adds the write-form line before the closing `---`. */
+export const NODE = (user: string, created: string, suggestions?: StoredSuggestion[]) =>
+  `---\ncreated: ${created}\nmodel: claude-opus-5-5\n${suggestions ? `${suggestionsLine(suggestions)}\n` : ''}---\n<!-- otago:user -->\n${user}\n\n<!-- otago:assistant -->\nAnswer to ${user}\n`;
+
+/** One scripted generation: `'gate'` waits until the test calls `open` on the recorded call. */
+export interface ScriptStep {
+  delayMs?: number;
+  picks: SuggestPick[] | 'fail' | 'gate';
+}
+
+export interface ScriptedCall {
+  input: SimulatedSuggestInput;
+  /** Releases a gated generation with this reply. */
+  open(picks: SuggestPick[] | 'fail'): void;
+}
+
+/**
+ * Scripted suggestion "model": steps are used in order (then `fallback`), every call is
+ * recorded with its input (including the abort signal).
+ */
+export function scriptedSuggest(
+  steps: ScriptStep[] = [],
+  fallback: ScriptStep = { delayMs: 100, picks: [{ text: 'What comes next?' }] },
+) {
+  const queue = [...steps];
+  const calls: ScriptedCall[] = [];
+  const simulate: SuggestSimulator = (input) => {
+    const step = queue.shift() ?? fallback;
+    const call: ScriptedCall = { input, open: () => undefined };
+    calls.push(call);
+    const delayMs = step.delayMs ?? 0;
+    if (step.picks !== 'gate') return { delayMs, picks: step.picks };
+    const picks = new Promise<SuggestPick[] | 'fail'>((resolve) => {
+      call.open = resolve;
+    });
+    return { delayMs, picks };
+  };
+  return { simulate, calls, push: (...more: ScriptStep[]) => queue.push(...more) };
+}
 
 /** A small tree: `a` (with `a/b`) and `c`. */
 export const SMALL_SEED: Record<string, string> = {
