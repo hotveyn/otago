@@ -237,6 +237,20 @@
   cursor: default;
 }
 
+/* New-tab chips and rows are anchors: keep the button look, not the prose link style. */
+.md a.cite-chip {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.md a.cite-chip.cite-url {
+  color: var(--text-soft);
+}
+
+.md a.cite-chip:hover {
+  color: var(--on-accent);
+}
+
 /* Source list under an answer */
 .citations {
   margin-top: 1.1em;
@@ -302,6 +316,15 @@
   color: var(--text);
 }
 
+.md a.cite-row {
+  color: var(--text-soft);
+  text-decoration: none;
+}
+
+.md a.cite-row:hover {
+  color: var(--text);
+}
+
 .cite-text {
   cursor: default;
 }
@@ -323,9 +346,20 @@
   white-space: nowrap;
 }
 
+.cite-comment {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
 .external-mark {
   color: var(--muted);
   font-size: 9.6px;
+}
+
+/* Inline file ref that cannot be opened yet (own-node `files/` while streaming). */
+.source-link.cite-text {
+  cursor: default;
+  text-decoration-style: dotted;
 }
 
 /* highlight.js: quiet, ink-on-paper palette */

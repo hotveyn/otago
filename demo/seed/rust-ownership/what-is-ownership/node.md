@@ -8,7 +8,7 @@ What is ownership in Rust, in plain words?
 <!-- otago:assistant -->
 Ownership is how Rust frees memory without a garbage collector. The compiler tracks **who is responsible** for every value and frees the value when that owner is gone.
 
-It comes down to three rules[^1]. Here they are:
+It comes down to three rules[^1][^2]. Here they are:
 
 1. Every value has exactly one owner, the variable that holds it.
 2. There is only one owner at a time. Assigning or passing the value *moves* ownership.
@@ -41,3 +41,4 @@ All of these checks run at compile time, so they cost nothing at run time[^1].
 **Exercise:** add `println!("{inner}");` right after the inner block. What error do you expect, and why?
 
 [^1]: sources/rust-ownership-notes.md:5-9
+[^2]: sources/rust-book-ch04-ownership.pdf:1-2 (cover and the three ownership rules)

@@ -121,5 +121,6 @@ export const chat = {
   },
   citations: {
     heading: 'Источники',
+    afterSave: 'Откроется после сохранения ответа',
   },
 } satisfies Messages<typeof en>;

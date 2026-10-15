@@ -10,14 +10,13 @@ import {
 } from './ebooks/index.js';
 import { isErrno, writeFileAtomic } from './fs-utils.js';
 import { resolveInside, SOURCES_DIR } from './paths.js';
+import { isSourceFileName } from './source-names.js';
 
 /** Max size of one uploaded source file. */
 export const MAX_SOURCE_BYTES = 20 * 1024 * 1024;
 
 export const TEXT_SOURCE_EXTENSIONS = ['.md', '.txt', '.pdf'] as const;
 export const SOURCE_EXTENSIONS = [...TEXT_SOURCE_EXTENSIONS, ...EBOOK_EXTENSIONS];
-
-const SOURCE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,199}$/;
 
 export interface SourceInfo {
   name: string;
@@ -40,12 +39,12 @@ export function contentTypeOf(name: string): string {
 }
 
 export function assertSourceName(name: string): void {
-  if (!SOURCE_NAME_RE.test(name) || name.includes('..')) {
+  if (!isSourceFileName(name)) {
     throw new InvalidInputError(`Invalid source file name: ${name}`);
   }
   if (ebookExtensionOf(name)) {
     // The extracted text must be a valid source name too.
-    if (!SOURCE_NAME_RE.test(ebookTextName(name))) {
+    if (!isSourceFileName(ebookTextName(name))) {
       throw new InvalidInputError(`Source file name is too long: ${name}`);
     }
     return;

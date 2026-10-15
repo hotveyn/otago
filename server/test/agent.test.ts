@@ -51,6 +51,38 @@ describe('prompt building', () => {
     }
   });
 
+  it('cites PDF pages and text lines, reference first', () => {
+    // Contract clickable-citations/contracts/prompt.ts PROMPT_REQUIRED_PHRASES.
+    for (const phrase of [
+      'sources/<file>:<start>-<end>',
+      'sources/<file>.pdf:<first page>-<last page>',
+      'page numbers',
+      'line numbers',
+      'files/<name>:<start>-<end>',
+      '<node-id>/files/<name>:<start>-<end>',
+      'PDFs have no line numbers',
+      'one reference per footnote',
+      'nothing before the reference',
+    ]) {
+      expect(SYSTEM_RULES).toContain(phrase);
+    }
+  });
+
+  it('every example footnote in the rules is machine-readable', () => {
+    // Mirrors contracts/prompt.ts PROMPT_EXAMPLE_FOOTNOTE_RE: a `sources/` or `files/` ref
+    // (or URL) first, then nothing or whitespace + a comment.
+    const footnote =
+      /^\[\^[^\]\s]+\]: (?:(?:[\p{L}\p{Nd}][\p{L}\p{M}\p{Nd}-]*\/)*(?:sources|files)\/[^\s:]+(?: [^:]+?)?\.(?:md|txt|pdf):\d+(?:-\d+)?|https?:\/\/\S+)(?:\s+\S.*)?$/u;
+    const examples = SYSTEM_RULES.split('\n')
+      .filter((line) => /^\s*\[\^[^\]]+\]:/.test(line))
+      .map((line) => line.trim());
+    expect(examples.length).toBeGreaterThanOrEqual(2);
+    for (const line of examples) expect(line, line).toMatch(footnote);
+    // One text citation with lines, one PDF citation with pages and a comment.
+    expect(examples.some((line) => /\.md:\d+-\d+$/.test(line))).toBe(true);
+    expect(examples.some((line) => /\.pdf:\d+-\d+ \(.+\)$/.test(line))).toBe(true);
+  });
+
   it('sends only the question when the chain is empty', () => {
     expect(buildUserPrompt([], '  What is borrowing? ')).toBe('What is borrowing?');
   });
@@ -216,6 +248,9 @@ describe('user files in prompts', () => {
       '<node-id>/files/',
       '.tmp-answer-',
       'attachments/…',
+      'files/<name>:<start>-<end>',
+      '<node-id>/files/<name>:<start>-<end>',
+      'page numbers for `.pdf`, line numbers otherwise',
     ]) {
       expect(SYSTEM_RULES).toContain(phrase);
     }
@@ -256,7 +291,7 @@ describe('node name sanitizing', () => {
 describe('naming prompt', () => {
   it('keeps prose and drops code, links, footnotes, URLs and HTML', () => {
     const answer = [
-      'Borrowing lets you **reference** a value [^1].',
+      'Borrowing lets you **reference** a value [^1]. The cover says so [^2].',
       '',
       '```rust',
       'let r = &x;',
@@ -270,10 +305,12 @@ describe('naming prompt', () => {
       'Use `&mut` for <b>mutable</b> borrows: https://example.com/x <https://example.com/y>',
       '',
       '[^1]: sources/the-book-ch4.md:120-134',
+      '[^2]: sources/a.pdf:1-4 (cover)',
     ].join('\n');
     expect(namingExcerpt(answer)).toBe(
-      'Borrowing lets you **reference** a value . See the book and . Use for mutable borrows:',
+      'Borrowing lets you **reference** a value . The cover says so . See the book and . Use for mutable borrows:',
     );
+    expect(namingExcerpt(answer)).not.toContain('(cover)');
   });
 
   it('drops an unclosed fence to the end and returns "" for a code-only answer', () => {

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../../../web/src/api/client';
 import type { QuestionStreamEvent, TreeBusyDetails } from '../../../web/src/api/types';
+import { extractCitations } from '../../../web/src/lib/citations';
 import { demoConnection } from './connection';
 import { makeDemo } from './test-helpers';
 
@@ -20,6 +21,10 @@ function record(demo: ReturnType<typeof makeDemo>['demo']) {
 
 const statuses = (events: QuestionStreamEvent[]) =>
   events.flatMap((e) => (e.event === 'question' ? [e.data.question.status] : []));
+
+// Mirrors contracts/prompt.ts (clickable-citations).
+const PROMPT_EXAMPLE_FOOTNOTE_RE =
+  /^\[\^[^\]\s]+\]: (?:(?:[\p{L}\p{Nd}][\p{L}\p{M}\p{Nd}-]*\/)*(?:sources|files)\/[^\s:]+(?: [^:]+?)?\.(?:md|txt|pdf):\d+(?:-\d+)?|https?:\/\/\S+)(?:\s+\S.*)?$/u;
 
 async function rejection(promise: Promise<unknown>): Promise<ApiError> {
   const error = await promise.then(
@@ -220,6 +225,77 @@ describe('simulated questions', () => {
     await demo.api.deleteNodes('renamed', ['a']);
     expect(demo.questions.snapshot().questions).toHaveLength(0);
     expect(events.at(-1)).toMatchObject({ event: 'removed', data: { reason: 'deleted' } });
+  });
+
+  it('answers cite the tree sources and the message files with machine-readable footnotes', async () => {
+    const { demo } = makeDemo();
+    const events = record(demo);
+    const pdf = `%PDF-1.4\n${[1, 2, 3].map((n) => `${n} 0 obj\n<< /Type /Page >>\nendobj\n`).join('')}`;
+    demo.vfs.transaction(() => demo.vfs.writeText('t/sources/guide.pdf', pdf));
+    await demo.api.startQuestion('t', {
+      parentId: 'a',
+      text: 'Cite please',
+      context: { kind: 'main' },
+      files: [new File(['one\ntwo\nthree\n'], 'draft.md')],
+    });
+    await vi.runAllTimersAsync();
+    const node = (await demo.api.getChain('t', 'a/cite-please')).at(-1);
+    const assistant = node?.assistant ?? '';
+    const streamed = events.flatMap((e) => (e.event === 'chunk' ? [e.data.text] : [])).join('');
+    expect(assistant).toBe(streamed.trim());
+
+    const definitions = assistant.split('\n').filter((line) => /^\[\^\d+\]: /.test(line));
+    expect(definitions).toHaveLength(3);
+    for (const line of definitions) expect(line).toMatch(PROMPT_EXAMPLE_FOOTNOTE_RE);
+    const pdfLine = /^\[\^1\]: sources\/guide\.pdf:(\d+)(?:-(\d+))? \([a-z ]+\)$/.exec(
+      definitions[0] ?? '',
+    );
+    expect(pdfLine, definitions[0]).not.toBeNull();
+    expect(Number(pdfLine?.[2] ?? pdfLine?.[1])).toBeLessThanOrEqual(3);
+    expect(definitions[1]).toBe('[^2]: sources/notes.md:1');
+    const fileLine = /^\[\^3\]: files\/draft\.md:(\d+)(?:-(\d+))?(?: \([a-z ]+\))?$/.exec(
+      definitions[2] ?? '',
+    );
+    expect(fileLine, definitions[2]).not.toBeNull();
+    expect(Number(fileLine?.[2] ?? fileLine?.[1])).toBeLessThanOrEqual(3);
+    expect(assistant).not.toMatch(/\S\[\^[^\]\s]+\]:/);
+
+    // The SAME web parser resolves the mock's citations.
+    const targets = extractCitations(assistant).citations.map((c) => c.target);
+    expect(targets).toEqual([
+      expect.objectContaining({
+        kind: 'source',
+        file: 'guide.pdf',
+        start: expect.any(Number),
+        end: expect.any(Number),
+        comment: expect.any(String),
+      }),
+      { kind: 'source', file: 'notes.md', start: 1, end: 1 },
+      expect.objectContaining({
+        kind: 'file',
+        node: undefined,
+        name: 'draft.md',
+        start: expect.any(Number),
+        end: expect.any(Number),
+      }),
+    ]);
+  });
+
+  it('cites an ancestor user file by node id', async () => {
+    const { demo } = makeDemo();
+    demo.vfs.transaction(() => demo.vfs.writeText('t/a/files/spec.txt', 'one\ntwo\n'));
+    await demo.api.startQuestion('t', {
+      parentId: 'a/b',
+      text: 'Deeper',
+      context: { kind: 'main' },
+    });
+    await vi.runAllTimersAsync();
+    const assistant = (await demo.api.getChain('t', 'a/b/deeper')).at(-1)?.assistant ?? '';
+    const line = assistant.split('\n').find((l) => l.startsWith('[^2]: '));
+    expect(line).toMatch(/^\[\^2\]: a\/files\/spec\.txt:(?:1|2|1-2)(?: \([a-z ]+\))?$/);
+    expect(line).toMatch(PROMPT_EXAMPLE_FOOTNOTE_RE);
+    const targets = extractCitations(assistant).citations.map((c) => c.target);
+    expect(targets[1]).toMatchObject({ kind: 'file', node: 'a', name: 'spec.txt' });
   });
 
   it('connection starts with a snapshot and follows the registry', async () => {

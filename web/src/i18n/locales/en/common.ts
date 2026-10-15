@@ -11,6 +11,8 @@ export const common = {
   root: 'root',
   line: 'line {{start}}',
   lines: 'lines {{start}}–{{end}}',
+  page: 'page {{start}}',
+  pages: 'pages {{start}}–{{end}}',
   errors: {
     busyStructural: 'Nodes are being moved, renamed or deleted. Try again in a moment.',
     busyStreaming: 'An answer is still streaming. Try again when it finishes.',

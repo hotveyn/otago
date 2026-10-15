@@ -23,11 +23,12 @@ import type {
   TreeBusyDetails,
   UserFileInfo,
 } from '../../../web/src/api/types';
+import { type CiteRef, citeRefOf, citeUnitOf, withCitations } from './cite';
 import { badRequest, conflict, notFound, payloadTooLarge } from './errors';
 import { DEMO_MAX_FILE_BYTES, fileInfoOf, MAX_MESSAGE_FILES, userFileNameOf } from './files';
 import type { TreeLocks } from './locks';
 import { loremAnswer, streamTokens } from './lorem';
-import { isSameOrDescendant, toNodeName, uniqueFileName } from './names';
+import { isSameOrDescendant, toNodeName, USER_FILES_DIR, uniqueFileName } from './names';
 import type { StoredFile, TreeStore } from './trees';
 
 export type Schedule = (fn: () => void, ms: number) => () => void;
@@ -330,7 +331,8 @@ export class Questions {
 
   private run(entry: Entry): void {
     const { id, attempt, text } = entry.info;
-    const tokens = streamTokens(loremAnswer(this.random));
+    const answer = withCitations(loremAnswer(this.random), this.citeRefs(entry), this.random);
+    const tokens = streamTokens(answer);
     const failAt =
       attempt === 1 && FAIL_WORD_RE.test(text) ? Math.floor(tokens.length * 0.4) : Infinity;
     let index = 0;
@@ -368,6 +370,34 @@ export class Questions {
       );
     };
     entry.cancelRun = this.schedule(tick, 250 + Math.floor(this.random() * 250));
+  }
+
+  /**
+   * What a simulated answer cites: up to one PDF and one text source of the tree, one of the
+   * message's own files (`files/<name>`) and one user file of the nearest ancestor that has
+   * any (`<node id>/files/<name>`).
+   */
+  private citeRefs(entry: Entry): CiteRef[] {
+    const { tree, parentId } = entry.info;
+    const refs: CiteRef[] = [];
+    const sources = this.trees.listSources(tree);
+    const pdf = sources.find((source) => citeUnitOf(source.name) === 'page');
+    const text = sources.find((source) => citeUnitOf(source.name) === 'line');
+    for (const source of [pdf, text]) {
+      if (!source) continue;
+      const { bytes } = this.trees.readSource(tree, source.name);
+      refs.push(citeRefOf(`sources/${source.name}`, source.name, bytes));
+    }
+    const own = entry.files[0];
+    if (own) refs.push(citeRefOf(`files/${own.name}`, own.name, own.bytes));
+    for (const node of this.trees.chain(tree, parentId).reverse()) {
+      const file = node.files[0];
+      if (!file) continue;
+      const { bytes } = this.trees.readNodeFileContent(tree, node.id, USER_FILES_DIR, file.name);
+      refs.push(citeRefOf(`${node.id}/files/${file.name}`, file.name, bytes));
+      break;
+    }
+    return refs;
   }
 
   private commit(entry: Entry, attempt: number): void {

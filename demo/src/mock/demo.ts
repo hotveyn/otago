@@ -119,13 +119,14 @@ export function createDemo(options: DemoOptions): Demo {
       }),
 
     listSources: (id) => respond(() => trees.listSources(id)),
-    getSourceText: (id, file) => respond(() => decoder.decode(trees.readSource(id, file).bytes)),
+    getSourceText: (id, file) =>
+      respond(() => decoder.decode(trees.readSource(id, nfc(file)).bytes)),
     uploadSource: (id, file) =>
       respond(async () => {
         trees.assertTree(id);
-        return trees.saveSource(id, file.name, await readUpload(file));
+        return trees.saveSource(id, nfc(file.name), await readUpload(file));
       }),
-    deleteSource: (id, file) => respond(() => trees.deleteSource(id, file)),
+    deleteSource: (id, file) => respond(() => trees.deleteSource(id, nfc(file))),
 
     deleteNodes: (id, ids) =>
       respond(() => {
@@ -193,8 +194,11 @@ export function createDemo(options: DemoOptions): Demo {
     questions,
     api,
     urls: {
-      source: (treeId, file) =>
-        blobs.url(trees.sourcePath(treeId, file), trees.sourceContentType(file)),
+      // `:file` is NFC-normalized like on the server's sources route.
+      source: (treeId, file) => {
+        const name = nfc(file);
+        return blobs.url(trees.sourcePath(treeId, name), trees.sourceContentType(name));
+      },
       nodeFile: (folder, treeId, nodeId, name) =>
         blobs.url(
           trees.nodeFilePath(treeId, nfc(nodeId), folder, name),

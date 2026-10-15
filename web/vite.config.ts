@@ -14,6 +14,8 @@ export default defineConfig(({ mode }) => {
     server: {
       host: '127.0.0.1',
       port: 5173,
+      // Extra hostnames mapped to 127.0.0.1 in /etc/hosts; `vite preview` inherits this too.
+      allowedHosts: ['otago'],
       proxy: {
         '/api': { target: apiTarget, changeOrigin: true },
       },

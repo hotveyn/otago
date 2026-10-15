@@ -1,0 +1,37 @@
+{
+  "slug": "clickable-citations",
+  "title": "Open cited sources and files from citations",
+  "created": "2026-10-15T08:28:12Z",
+  "workspace_root": "/Users/ioannshestopalov/Programming/otago",
+  "contracts": {
+    "owner": "server",
+    "generated": true,
+    "path": ".claude/features/clickable-citations/contracts"
+  },
+  "projects": [
+    {
+      "name": "server",
+      "root": "server",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "server",
+      "stage": "implemented"
+    },
+    {
+      "name": "web",
+      "root": "web",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "client",
+      "stage": "implemented"
+    },
+    {
+      "name": "demo",
+      "root": "demo",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "client",
+      "stage": "implemented"
+    }
+  ]
+}

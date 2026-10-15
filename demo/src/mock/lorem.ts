@@ -10,12 +10,17 @@ const WORDS = (
   'felis sollicitudin mauris integer in mauris eu nibh euismod gravida'
 ).split(' ');
 
-type Random = () => number;
+export type Random = () => number;
 
 const int = (random: Random, min: number, max: number) =>
   min + Math.floor(random() * (max - min + 1));
 
 const pick = (random: Random) => WORDS[int(random, 0, WORDS.length - 1)] ?? 'lorem';
+
+/** `count` random lorem words (lowercase), e.g. for a footnote comment. */
+export function loremWords(random: Random, count: number): string[] {
+  return Array.from({ length: count }, () => pick(random));
+}
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 

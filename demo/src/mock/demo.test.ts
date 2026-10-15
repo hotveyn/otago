@@ -103,6 +103,17 @@ describe('demo api: sources and urls', () => {
     expect((await apiError(demo.api.getSourceText('t', 'chapter-1.md'))).status).toBe(404);
   });
 
+  it('accepts Unicode names and stores them in NFC', async () => {
+    const { demo } = makeDemo();
+    const name = 'Высоконагруженные приложения, поддержка (Мартин Клеппман).pdf';
+    const file = new File(['%PDF'], name.normalize('NFD'));
+    expect(await demo.api.uploadSource('t', file)).toEqual({ name, size: 4 });
+    expect((await demo.api.listSources('t')).map((s) => s.name)).toContain(name);
+    expect((await apiError(demo.api.uploadSource('t', new File(['x'], 'a:b.md')))).status).toBe(
+      400,
+    );
+  });
+
   it('rejects e-books and oversized uploads', async () => {
     const { demo } = makeDemo();
     const book = new File(['x'], 'book.epub');
@@ -117,6 +128,46 @@ describe('demo api: sources and urls', () => {
     const error = await apiError(demo.api.createTree({ title: 'Big' }));
     expect(error.status).toBe(413);
     expect((await demo.api.listTrees()).map((tree) => tree.id)).toEqual(['t']);
+  });
+
+  it('serves PDFs as application/pdf blob URLs that keep working with a page fragment', async () => {
+    const { demo } = makeDemo();
+    const pdf = '%PDF-1.4\n1 0 obj\n<< /Type /Page >>\nendobj\n';
+    await demo.api.uploadSource('t', new File([pdf], 'guide.pdf'));
+    const url = demo.urls.source('t', 'guide.pdf');
+    expect(url).toMatch(/^blob:/);
+    const plain = await fetch(url);
+    expect(plain.headers.get('content-type')).toBe('application/pdf');
+    expect(await plain.text()).toBe(pdf);
+    // The fragment never reaches the "server": same blob, positioned by the viewer.
+    const paged = await fetch(`${url}#page=3`);
+    expect(paged.headers.get('content-type')).toBe('application/pdf');
+    expect(await paged.text()).toBe(pdf);
+    const md = await fetch(demo.urls.source('t', 'notes.md'));
+    expect(md.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
+  });
+
+  it('normalizes source names to NFC like the server', async () => {
+    const { demo } = makeDemo();
+    const name = 'Дизайн данных (Клеппман).pdf'; // `й` decomposes under NFD
+    const nfd = name.normalize('NFD');
+    expect(nfd).not.toBe(name);
+    await demo.api.uploadSource('t', new File(['%PDF-1.4\n'], name));
+    expect(await demo.api.getSourceText('t', nfd)).toBe('%PDF-1.4\n');
+    expect(demo.urls.source('t', nfd)).toBe(demo.urls.source('t', name));
+    await demo.api.deleteSource('t', nfd);
+    expect((await demo.api.listSources('t')).map((s) => s.name)).toEqual(['notes.md']);
+  });
+
+  it('user files: blob typed by name, missing file is a text/plain not-found blob', async () => {
+    const { demo } = makeDemo();
+    demo.vfs.transaction(() => demo.vfs.writeText('t/a/files/report.pdf', '%PDF-1.4\n'));
+    const found = await fetch(demo.urls.nodeFile('files', 't', 'a', 'report.pdf'));
+    expect(found.headers.get('content-type')).toBe('application/pdf');
+    expect(await found.text()).toBe('%PDF-1.4\n');
+    const missing = await fetch(demo.urls.nodeFile('files', 't', 'a', 'nope.pdf'));
+    expect(missing.headers.get('content-type')).toMatch(/^text\/plain/);
+    expect(await missing.text()).toBe('Not found: t/a/files/nope.pdf');
   });
 
   it('serves files as blob URLs, new URL when the file changes', () => {

@@ -14,6 +14,8 @@ export const common = {
   root: 'корень',
   line: 'строка {{start}}',
   lines: 'строки {{start}}–{{end}}',
+  page: 'страница {{start}}',
+  pages: 'страницы {{start}}–{{end}}',
   errors: {
     busyStructural:
       'Узлы перемещаются, переименовываются или удаляются. Попробуйте через мгновение.',

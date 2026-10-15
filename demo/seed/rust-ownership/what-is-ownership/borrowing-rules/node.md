@@ -18,7 +18,7 @@ let n = length(&name); // lend `name` for the call
 println!("{name} has {n} letters"); // still usable: it was only borrowed
 ```
 
-There are two kinds of reference, and the rule between them is strict: **many readers or one writer, never both**.
+There are two kinds of reference, and the rule between them is strict: **many readers or one writer, never both**[^3].
 
 ![Borrowing rules](attachments/borrow-rules.csv)
 
@@ -35,3 +35,4 @@ v.push(4);           // so a mutable borrow is fine now
 
 [^1]: sources/rust-ownership-notes.md:26-28
 [^2]: sources/rust-ownership-notes.md:29
+[^3]: sources/rust-book-ch04-ownership.pdf:3-4 (the two borrowing rules)

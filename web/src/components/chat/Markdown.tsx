@@ -9,15 +9,22 @@ import {
   CITE_HREF_PREFIX,
   type Citation,
   type CitationTarget,
+  describeRange,
   describeTarget,
   extractCitations,
+  type FileTarget,
   hostOf,
-  parseSourceRef,
+  labelOf,
+  parseWholeRef,
   pathOf,
 } from '../../lib/citations';
 import { isFenceClosed } from '../../lib/fences';
-import { type SourceView, useOpenSource } from '../source-viewer-context';
+import { type CitationScope, type OpenAction, openActionFor } from '../../lib/open-citation';
+import { formatLabel } from '../../lib/sources';
+import { useOpenAttachment, useOpenSource } from '../source-viewer-context';
+import { IdPath } from '../ui/IdPath';
 import { AttachmentImage, AttachmentLink } from './AttachmentInline';
+import { useAttachmentScope } from './attachment-scope';
 import { CodeFrame } from './CodeFrame';
 import { CsvBlock } from './CsvBlock';
 import { MermaidBlock } from './MermaidBlock';
@@ -49,79 +56,188 @@ function CodeBlock({ node, children }: { node?: Element; children?: ReactNode })
   );
 }
 
-function openTarget(target: CitationTarget, openSource: (view: SourceView) => void) {
-  if (target.kind === 'source')
-    openSource({ file: target.file, start: target.start, end: target.end });
-  else if (target.kind === 'url') window.open(target.url, '_blank', 'noopener,noreferrer');
+/** Tree + committed node the citations of this answer resolve against (null = no answer). */
+function useCitationScope(): CitationScope | null {
+  const scope = useAttachmentScope();
+  return scope ? { treeId: scope.treeId, nodeId: scope.nodeId } : null;
+}
+
+function useCitationAction(target: CitationTarget): OpenAction {
+  return openActionFor(target, useCitationScope());
+}
+
+/** A `files/` ref of the answer's own node that cannot be resolved until the answer is saved. */
+const pendingFile = (target: CitationTarget, action: OpenAction) =>
+  target.kind === 'file' && action.kind === 'none';
+
+interface TargetLinkProps {
+  action: OpenAction;
+  className: string;
+  title?: string;
+  /** Element for an action-less target: a disabled button (chips) or a span (rows, inline). */
+  inert: 'button' | 'span';
+  children: ReactNode;
+}
+
+/**
+ * The one element that performs an `OpenAction`: a real anchor for new tabs (the href is
+ * precomputed, so the browser opens it synchronously from the click), a button for the in-app
+ * viewers, an inert element otherwise.
+ */
+function TargetLink({ action, className, title, inert, children }: TargetLinkProps) {
+  const scope = useCitationScope();
+  const openSource = useOpenSource();
+  const openAttachment = useOpenAttachment();
+  if (action.kind === 'new-tab')
+    return (
+      <a
+        className={className}
+        href={action.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={title}
+      >
+        {children}
+      </a>
+    );
+  if (action.kind === 'viewer') {
+    const open = () => {
+      if (action.where === 'source')
+        openSource({ file: action.name, start: action.start, end: action.end });
+      else if (scope)
+        openAttachment({
+          treeId: scope.treeId,
+          nodeId: action.node,
+          folder: 'files',
+          // Size unknown (0 passes the preview limit); the text is fetched once at most.
+          attachment: {
+            name: action.name,
+            kind: 'text',
+            contentType: action.name.toLowerCase().endsWith('.md')
+              ? 'text/markdown; charset=utf-8'
+              : 'text/plain; charset=utf-8',
+            size: 0,
+          },
+          start: action.start,
+          end: action.end,
+        });
+    };
+    return (
+      <button type="button" className={className} title={title} onClick={open}>
+        {children}
+      </button>
+    );
+  }
+  if (inert === 'button')
+    return (
+      <button type="button" className={className} title={title} disabled>
+        {children}
+      </button>
+    );
+  return (
+    <span className={className} title={title}>
+      {children}
+    </span>
+  );
 }
 
 function CitationChip({ citation }: { citation: Citation }) {
-  const openSource = useOpenSource();
-  const clickable = citation.target.kind !== 'text';
+  const { t } = useTranslation('chat');
+  const { target } = citation;
+  const action = useCitationAction(target);
+  const title = pendingFile(target, action) ? t('citations.afterSave') : describeTarget(target);
   return (
-    <button
-      type="button"
-      className={`cite-chip cite-${citation.target.kind}`}
-      title={describeTarget(citation.target)}
-      onClick={() => openTarget(citation.target, openSource)}
-      disabled={!clickable}
+    <TargetLink
+      action={action}
+      className={`cite-chip cite-${target.kind}`}
+      title={title}
+      inert="button"
     >
       {citation.number}
-    </button>
+    </TargetLink>
   );
 }
 
-function SourceLink({ view, children }: { view: SourceView; children: ReactNode }) {
-  const openSource = useOpenSource();
+function FileRow({ target }: { target: FileTarget }) {
+  const { t } = useTranslation('chat');
+  const action = useCitationAction(target);
+  const name = labelOf(target);
+  const range = describeRange(name, target.start, target.end);
+  const inert = action.kind === 'none';
   return (
-    <button type="button" className="source-link" onClick={() => openSource(view)}>
-      {children}
-    </button>
+    <TargetLink
+      action={action}
+      className={inert ? 'cite-row cite-text' : 'cite-row'}
+      title={pendingFile(target, action) ? t('citations.afterSave') : undefined}
+      inert="span"
+    >
+      <span className="file-badge">{formatLabel(name)}</span>
+      <span className="cite-file" dir="auto">
+        {target.kind === 'file' ? (
+          <>
+            {target.node !== undefined && (
+              <>
+                <IdPath id={target.node} />/
+              </>
+            )}
+            files/{target.name}
+          </>
+        ) : (
+          target.file
+        )}
+      </span>
+      {range && <span className="cite-lines">{range}</span>}
+      {target.comment !== undefined && (
+        <span className="cite-comment muted truncate" dir="auto" title={target.comment}>
+          {target.comment}
+        </span>
+      )}
+      {action.kind === 'new-tab' && (
+        <span className="external-mark" aria-hidden>
+          ↗
+        </span>
+      )}
+    </TargetLink>
   );
+}
+
+function CitationRow({ target }: { target: CitationTarget }) {
+  switch (target.kind) {
+    case 'source':
+    case 'file':
+      return <FileRow target={target} />;
+    case 'url':
+      return (
+        <a className="cite-row" href={target.url} target="_blank" rel="noopener noreferrer">
+          <span className="cite-host">{hostOf(target.url)}</span>
+          <span className="cite-title truncate">{target.title ?? pathOf(target.url)}</span>
+          {target.comment !== undefined && (
+            <span className="cite-comment muted truncate" dir="auto" title={target.comment}>
+              {target.comment}
+            </span>
+          )}
+          <span className="external-mark" aria-hidden>
+            ↗
+          </span>
+        </a>
+      );
+    case 'text':
+      return <span className="cite-row cite-text">{target.text}</span>;
+  }
 }
 
 function CitationList({ citations }: { citations: Citation[] }) {
-  const { t } = useTranslation(['common', 'chat']);
-  const openSource = useOpenSource();
+  const { t } = useTranslation('chat');
   return (
     <aside className="citations">
-      <h4>{t('chat:citations.heading')}</h4>
+      <h4>{t('citations.heading')}</h4>
       <ol>
-        {citations.map((citation) => {
-          const { target } = citation;
-          return (
-            <li key={citation.key}>
-              <span className="cite-num">{citation.number}</span>
-              {target.kind === 'source' && (
-                <button
-                  type="button"
-                  className="cite-row"
-                  onClick={() => openTarget(target, openSource)}
-                >
-                  <span className="file-badge">{target.file.split('.').pop()}</span>
-                  <span className="cite-file">{target.file}</span>
-                  {target.start !== undefined && (
-                    <span className="cite-lines">
-                      {target.end && target.end !== target.start
-                        ? t('lines', { start: target.start, end: target.end })
-                        : t('line', { start: target.start })}
-                    </span>
-                  )}
-                </button>
-              )}
-              {target.kind === 'url' && (
-                <a className="cite-row" href={target.url} target="_blank" rel="noopener noreferrer">
-                  <span className="cite-host">{hostOf(target.url)}</span>
-                  <span className="cite-title truncate">{target.title ?? pathOf(target.url)}</span>
-                  <span className="external-mark" aria-hidden>
-                    ↗
-                  </span>
-                </a>
-              )}
-              {target.kind === 'text' && <span className="cite-row cite-text">{target.text}</span>}
-            </li>
-          );
-        })}
+        {citations.map((citation) => (
+          <li key={citation.key}>
+            <span className="cite-num">{citation.number}</span>
+            <CitationRow target={citation.target} />
+          </li>
+        ))}
       </ol>
     </aside>
   );
@@ -156,6 +272,28 @@ function Pre({ node, children }: { node?: Element; children?: ReactNode }) {
   return <CodeBlock node={node}>{children}</CodeBlock>;
 }
 
+/** An inline `sources/…` or `files/…` link in the body. */
+function InlineRef({ target, children }: { target: FileTarget; children?: ReactNode }) {
+  const { t } = useTranslation('chat');
+  const action = useCitationAction(target);
+  const className =
+    action.kind === 'new-tab'
+      ? 'source-link external'
+      : action.kind === 'none'
+        ? 'source-link cite-text'
+        : 'source-link';
+  return (
+    <TargetLink
+      action={action}
+      className={className}
+      title={pendingFile(target, action) ? t('citations.afterSave') : undefined}
+      inert="span"
+    >
+      {children}
+    </TargetLink>
+  );
+}
+
 function Anchor({ href = '', children }: { href?: string; children?: ReactNode }) {
   const { citations } = useContext(RenderContext);
   if (href.startsWith(CITE_HREF_PREFIX)) {
@@ -164,14 +302,8 @@ function Anchor({ href = '', children }: { href?: string; children?: ReactNode }
   }
   const attachment = parseAttachmentHref(href);
   if (attachment) return <AttachmentLink name={attachment}>{children}</AttachmentLink>;
-  const source = parseSourceRef(safeDecode(href));
-  if (source) {
-    return (
-      <SourceLink view={{ file: source.file, start: source.start, end: source.end }}>
-        {children}
-      </SourceLink>
-    );
-  }
+  const ref = parseWholeRef(safeDecode(href));
+  if (ref) return <InlineRef target={ref}>{children}</InlineRef>;
   if (/^https?:\/\//.test(href)) {
     return (
       <a href={href} target="_blank" rel="noopener noreferrer" className="external">

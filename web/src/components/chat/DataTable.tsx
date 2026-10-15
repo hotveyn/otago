@@ -1,6 +1,7 @@
 import { type ReactNode, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PREVIEW_LIMITS } from '../../lib/attachments';
+import { isSmallTable } from '../../lib/table';
 import { SortButton, TableBar, useTableView } from './table-controls';
 
 interface DataTableProps {
@@ -32,21 +33,25 @@ export function DataTable({
   const [expanded, setExpanded] = useState(false);
   const collapsed = collapsedRows !== undefined && !expanded && order.length > collapsedRows;
   const visible = collapsed ? order.slice(0, collapsedRows) : order;
+  // Small tables need no filter / export; keep the bar only when it carries extra actions.
+  const showBar = !isSmallTable(header.length, limited.length) || Boolean(extraActions);
 
   return (
     <div className="data-table">
-      <TableBar
-        query={query}
-        onQuery={setQuery}
-        shown={order.length}
-        total={limited.length}
-        header={header}
-        rows={limited}
-        order={order}
-        baseName={baseName}
-      >
-        {extraActions}
-      </TableBar>
+      {showBar && (
+        <TableBar
+          query={query}
+          onQuery={setQuery}
+          shown={order.length}
+          total={limited.length}
+          header={header}
+          rows={limited}
+          order={order}
+          baseName={baseName}
+        >
+          {extraActions}
+        </TableBar>
+      )}
       <div className="table-wrap data-table-scroll">
         <table>
           <thead>

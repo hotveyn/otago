@@ -44,6 +44,9 @@ describe('sources API', () => {
     expect(md.body).toBe('# Chapter 4\nBorrowing.');
     const pdf = await ctx.app.inject({ method: 'GET', url: '/api/trees/rust/sources/paper.pdf' });
     expect(pdf.headers['content-type']).toBe('application/pdf');
+    // Inline and without a CSP: the native PDF viewer can open the file at `#page=N`.
+    expect(pdf.headers).not.toHaveProperty('content-disposition');
+    expect(pdf.headers).not.toHaveProperty('content-security-policy');
 
     const del = await ctx.app.inject({
       method: 'DELETE',
@@ -59,6 +62,49 @@ describe('sources API', () => {
     expect(delAgain.statusCode).toBe(404);
   });
 
+  it('accepts Unicode names with spaces and punctuation, stored in NFC', async () => {
+    const name =
+      'Высоконагруженные приложения. Программирование, масштабирование, поддержка (Мартин Клеппман).pdf';
+    const res = await upload(name, '%PDF-1.4');
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toEqual({ name, size: 8 });
+    const nfd = 'café notes.md'.normalize('NFD');
+    expect((await upload(nfd, 'x')).json()).toMatchObject({ name: nfd.normalize('NFC') });
+    expect(await readdir(path.join(ctx.treesDir, 'rust', 'sources'))).toEqual([
+      nfd.normalize('NFC'),
+      name,
+    ]);
+    // `:file` is normalized to NFC on read: a citation copied from NFD text still resolves.
+    const viaNfd = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/trees/rust/sources/${encodeURIComponent(nfd)}`,
+    });
+    expect(viaNfd.statusCode).toBe(200);
+    expect(viaNfd.body).toBe('x');
+    const viaNfc = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/trees/rust/sources/${encodeURIComponent(nfd.normalize('NFC'))}`,
+    });
+    expect(viaNfc.body).toBe('x');
+    const neither = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/trees/rust/sources/${encodeURIComponent('cafe notes.md')}`,
+    });
+    expect(neither.statusCode).toBe(404);
+    expect(neither.json()).toEqual({ error: 'Source not found: cafe notes.md' });
+    const get = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/trees/rust/sources/${encodeURIComponent(name)}`,
+    });
+    expect(get.statusCode).toBe(200);
+    expect(get.headers['content-type']).toBe('application/pdf');
+    const del = await ctx.app.inject({
+      method: 'DELETE',
+      url: `/api/trees/rust/sources/${encodeURIComponent(name)}`,
+    });
+    expect(del.statusCode).toBe(204);
+  });
+
   it('replaces a source with the same name', async () => {
     await upload('a.md', 'v1');
     await upload('a.md', 'v2');
@@ -68,7 +114,18 @@ describe('sources API', () => {
   });
 
   it('rejects other extensions and unsafe file names', async () => {
-    for (const name of ['image.png', 'script.js', 'noext', '.hidden.md', '..md']) {
+    const long = `${'я'.repeat(125)}.md`; // 253 UTF-8 bytes
+    for (const name of [
+      'image.png',
+      'script.js',
+      'noext',
+      '.hidden.md',
+      '..md',
+      'a:b.md',
+      'tab\tname.md',
+      'trailing .md ',
+      long,
+    ]) {
       const res = await upload(name);
       expect(res.statusCode, name).toBe(400);
     }

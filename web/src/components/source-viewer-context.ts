@@ -19,6 +19,9 @@ export interface AttachmentView {
   asText?: boolean;
   /** Node folder the file lives in; defaults to agent `attachments`. */
   folder?: FileFolder;
+  /** 1-based lines to scroll to and highlight (`text` kind only, e.g. a cited user file). */
+  start?: number;
+  end?: number;
 }
 
 export const AttachmentViewerContext = createContext<(view: AttachmentView) => void>(() => {});

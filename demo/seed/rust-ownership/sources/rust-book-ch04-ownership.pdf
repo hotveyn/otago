@@ -1,0 +1,163 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R 9 0 R] /Count 4 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 11 0 R /F2 12 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 494 >>
+stream
+BT
+/F2 18 Tf
+72 760 Td
+(The Rust Programming Language) Tj
+/F1 11 Tf
+0 -32 Td
+(Chapter 4: Understanding Ownership) Tj
+0 -16 Td
+0 -16 Td
+(Ownership is Rust's most unique feature. It lets Rust make memory) Tj
+0 -16 Td
+(safety guarantees without needing a garbage collector.) Tj
+0 -16 Td
+0 -16 Td
+(Contents) Tj
+0 -16 Td
+(  4.1 What Is Ownership?            page 2) Tj
+0 -16 Td
+(  4.2 References and Borrowing      page 3) Tj
+0 -16 Td
+(  4.2 Mutable and dangling references   page 4) Tj
+0 -16 Td
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 11 0 R /F2 12 0 R >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 598 >>
+stream
+BT
+/F2 18 Tf
+72 760 Td
+(4.1 What Is Ownership?) Tj
+/F1 11 Tf
+0 -32 Td
+(Ownership rules:) Tj
+0 -16 Td
+(  1. Each value in Rust has an owner.) Tj
+0 -16 Td
+(  2. There can only be one owner at a time.) Tj
+0 -16 Td
+(  3. When the owner goes out of scope, the value will be dropped.) Tj
+0 -16 Td
+0 -16 Td
+(The String type:) Tj
+0 -16 Td
+(  let s = String::from\("hello"\);) Tj
+0 -16 Td
+(  s.push_str\(", world!"\);) Tj
+0 -16 Td
+(  println!\("{s}"\);) Tj
+0 -16 Td
+0 -16 Td
+(A String is allocated on the heap. When s goes out of scope,) Tj
+0 -16 Td
+(Rust calls drop and returns the memory.) Tj
+0 -16 Td
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 11 0 R /F2 12 0 R >> >> /Contents 8 0 R >>
+endobj
+8 0 obj
+<< /Length 477 >>
+stream
+BT
+/F2 18 Tf
+72 760 Td
+(4.2 References and Borrowing) Tj
+/F1 11 Tf
+0 -32 Td
+(A reference lets you refer to a value without taking ownership.) Tj
+0 -16 Td
+0 -16 Td
+(  fn calculate_length\(s: &String\) -> usize { s.len\(\) }) Tj
+0 -16 Td
+0 -16 Td
+(The rules of references:) Tj
+0 -16 Td
+(  1. At any given time, you can have either one mutable reference) Tj
+0 -16 Td
+(     or any number of immutable references.) Tj
+0 -16 Td
+(  2. References must always be valid.) Tj
+0 -16 Td
+ET
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 11 0 R /F2 12 0 R >> >> /Contents 10 0 R >>
+endobj
+10 0 obj
+<< /Length 583 >>
+stream
+BT
+/F2 18 Tf
+72 760 Td
+(4.2 Mutable and dangling references) Tj
+/F1 11 Tf
+0 -32 Td
+(Mutable references have one big restriction: if you have a) Tj
+0 -16 Td
+(mutable reference to a value, you can have no other references) Tj
+0 -16 Td
+(to that value.) Tj
+0 -16 Td
+0 -16 Td
+(  let r1 = &mut s;) Tj
+0 -16 Td
+(  let r2 = &mut s;  // error[E0499]) Tj
+0 -16 Td
+0 -16 Td
+(A dangling reference points to memory that was freed. Rust) Tj
+0 -16 Td
+(guarantees that references never dangle: the compiler checks) Tj
+0 -16 Td
+(that the data lives at least as long as the reference.) Tj
+0 -16 Td
+ET
+endstream
+endobj
+11 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+12 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+xref
+0 13
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000133 00000 n 
+0000000271 00000 n 
+0000000815 00000 n 
+0000000953 00000 n 
+0000001601 00000 n 
+0000001739 00000 n 
+0000002266 00000 n 
+0000002405 00000 n 
+0000003039 00000 n 
+0000003110 00000 n 
+trailer
+<< /Size 13 /Root 1 0 R >>
+startxref
+3186
+%%EOF

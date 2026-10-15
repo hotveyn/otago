@@ -7,6 +7,7 @@
     "dev": "turbo run dev --filter=!@otago/demo",
     "demo": "pnpm --filter @otago/demo dev",
     "build": "turbo run build",
+    "postbuild": "./restart.sh",
     "lint": "turbo run lint",
     "format": "biome format --write .",
     "check": "biome check --write .",

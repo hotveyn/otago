@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compareCells, filterRows, parseNumeric, sortRows } from './table';
+import { compareCells, filterRows, isSmallTable, parseNumeric, sortRows } from './table';
 
 describe('parseNumeric', () => {
   it('reads plain, grouped, percent and signed numbers', () => {
@@ -75,5 +75,15 @@ describe('filterRows', () => {
 
   it('returns everything for an empty query', () => {
     expect(filterRows(rows, '   ')).toEqual([0, 1, 2]);
+  });
+});
+
+describe('isSmallTable', () => {
+  it('is small only when both columns < 5 and rows < 20', () => {
+    expect(isSmallTable(2, 5)).toBe(true);
+    expect(isSmallTable(4, 19)).toBe(true);
+    expect(isSmallTable(5, 5)).toBe(false);
+    expect(isSmallTable(2, 20)).toBe(false);
+    expect(isSmallTable(0, 0)).toBe(true);
   });
 });

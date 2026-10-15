@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { sourceUrl } from '../api/client';
 import { useSourceText } from '../api/queries';
+import { describeRange } from '../lib/citations';
 import { bookOfText, formatLabel, viewableFile } from '../lib/sources';
 import { Markdown } from './chat/Markdown';
+import { LineView } from './LineView';
 import type { SourceView } from './source-viewer-context';
 import { ErrorNote } from './ui/ErrorNote';
 
@@ -22,9 +24,9 @@ export function SourceViewer({ treeId, view, onClose }: SourceViewerProps) {
   const isMarkdown = file.toLowerCase().endsWith('.md');
   const text = useSourceText(treeId, file, !isPdf);
   const [rendered, setRendered] = useState(false);
-  const highlight = useRef<HTMLDivElement>(null);
   const start = view.start;
   const end = view.end ?? view.start;
+  const range = describeRange(file, start, end);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -39,24 +41,12 @@ export function SourceViewer({ treeId, view, onClose }: SourceViewerProps) {
     if (start !== undefined) setRendered(false);
   }, [start]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: re-scroll when the cited range changes
-  useEffect(() => {
-    if (text.data !== undefined && !rendered)
-      highlight.current?.scrollIntoView({ block: 'center' });
-  }, [text.data, rendered, start, end]);
-
-  const lines = text.data?.replace(/\n$/, '').split('\n') ?? [];
-
   return (
     <div className="viewer" role="dialog" aria-label={t('sourceLabel', { name: book ?? file })}>
       <header className="viewer-header">
         <span className="file-badge">{formatLabel(file)}</span>
         <span className="viewer-title truncate">{book ?? file}</span>
-        {start !== undefined && (
-          <span className="cite-lines">
-            {end !== start ? t('common:lines', { start, end }) : t('common:line', { start })}
-          </span>
-        )}
+        {range && <span className="cite-lines">{range}</span>}
         <span className="spacer" />
         {isMarkdown && (
           <button
@@ -98,24 +88,7 @@ export function SourceViewer({ treeId, view, onClose }: SourceViewerProps) {
             <Markdown text={text.data} plain />
           </div>
         ) : (
-          <div className="lines">
-            {lines.map((line, index) => {
-              const number = index + 1;
-              const inRange =
-                start !== undefined && end !== undefined && number >= start && number <= end;
-              return (
-                <div
-                  // biome-ignore lint/suspicious/noArrayIndexKey: lines are positional
-                  key={index}
-                  ref={number === start ? highlight : undefined}
-                  className={inRange ? 'line line-hit' : 'line'}
-                >
-                  <span className="line-no">{number}</span>
-                  <span className="line-text">{line || ' '}</span>
-                </div>
-              );
-            })}
-          </div>
+          <LineView text={text.data} start={start} end={end} />
         )}
       </div>
     </div>

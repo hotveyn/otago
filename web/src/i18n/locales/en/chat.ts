@@ -110,5 +110,6 @@ export const chat = {
   },
   citations: {
     heading: 'Sources',
+    afterSave: 'Opens when the answer is saved',
   },
 };

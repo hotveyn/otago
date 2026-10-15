@@ -3,6 +3,7 @@
  * `user-files.ts` and `sources.ts` (they import Node modules). E-books are not supported in
  * the demo: their conversion needs the server.
  */
+import { isSourceFileName } from '../../../server/src/storage/source-names';
 import type { AttachmentInfo, AttachmentKind, UserFileInfo } from '../../../web/src/api/types';
 import { badRequest } from './errors';
 
@@ -124,7 +125,6 @@ export function isNodeFileName(name: string): boolean {
 
 const SOURCE_EXTENSIONS = ['.md', '.txt', '.pdf'];
 const EBOOK_EXTENSIONS = ['.fb2.zip', '.epub', '.fb2', '.mobi', '.azw', '.azw3'];
-const SOURCE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,199}$/;
 
 const extensionOf = (name: string) => {
   const dot = name.lastIndexOf('.');
@@ -134,15 +134,11 @@ const extensionOf = (name: string) => {
 const isEbook = (name: string) => EBOOK_EXTENSIONS.some((ext) => name.toLowerCase().endsWith(ext));
 
 export function isSourceName(name: string): boolean {
-  return (
-    SOURCE_NAME_RE.test(name) &&
-    !name.includes('..') &&
-    SOURCE_EXTENSIONS.includes(extensionOf(name))
-  );
+  return isSourceFileName(name) && SOURCE_EXTENSIONS.includes(extensionOf(name));
 }
 
 export function assertSourceName(name: string): void {
-  if (!SOURCE_NAME_RE.test(name) || name.includes('..')) {
+  if (!isSourceFileName(name)) {
     throw badRequest(`Invalid source file name: ${name}`);
   }
   if (isEbook(name)) {

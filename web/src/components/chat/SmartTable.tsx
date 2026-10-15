@@ -7,6 +7,7 @@ import {
   type ReactNode,
   useMemo,
 } from 'react';
+import { isSmallTable } from '../../lib/table';
 import { SortButton, TableBar, useTableView } from './table-controls';
 
 type Props = { children?: ReactNode; [key: string]: unknown };
@@ -81,16 +82,18 @@ function Controlled({ structure }: { structure: Structure }) {
   );
   return (
     <div className="data-table">
-      <TableBar
-        query={query}
-        onQuery={setQuery}
-        shown={order.length}
-        total={rows.length}
-        header={header}
-        rows={rows}
-        order={order}
-        baseName="table"
-      />
+      {!isSmallTable(header.length, rows.length) && (
+        <TableBar
+          query={query}
+          onQuery={setQuery}
+          shown={order.length}
+          total={rows.length}
+          header={header}
+          rows={rows}
+          order={order}
+          baseName="table"
+        />
+      )}
       <div className="table-wrap">
         <table>
           {cloneElement(thead, {}, cloneElement(headRow, {}, cells))}
@@ -103,7 +106,8 @@ function Controlled({ structure }: { structure: Structure }) {
 
 /**
  * GFM table with sort / filter / Export CSV that keeps react-markdown's rendered cells.
- * Falls back to a plain table when the structure is unexpected or has fewer than 2 rows.
+ * Falls back to a plain table when the structure is unexpected or has fewer than 2 rows;
+ * small tables (see `isSmallTable`) keep sorting but show no bar.
  */
 export function SmartTable({ node, children }: { node?: Element; children?: ReactNode }) {
   const structure = useMemo(() => readStructure(node, children), [node, children]);

@@ -3,11 +3,13 @@ import { useTranslation } from 'react-i18next';
 import { nodeFileUrl } from '../api/client';
 import { useAttachmentBlob, useAttachmentText } from '../api/queries';
 import { extensionOf, formatBytes, PREVIEW_LIMITS } from '../lib/attachments';
+import { describeRange } from '../lib/citations';
 import { parseCsv } from '../lib/csv';
 import { baseNameOf, delimiterFor } from './chat/AttachmentCard';
 import { KindBadge } from './chat/AttachmentInline';
 import { DataTable } from './chat/DataTable';
 import { Markdown } from './chat/Markdown';
+import { LineView } from './LineView';
 import type { AttachmentView } from './source-viewer-context';
 import { ErrorNote } from './ui/ErrorNote';
 
@@ -76,6 +78,9 @@ function TextBody({ view, rendered }: { view: AttachmentView; rendered: boolean 
         <Markdown text={text.data} plain />
       </div>
     );
+  // A cited user file: numbered lines scrolled to the range, like a source.
+  if (view.start !== undefined)
+    return <LineView text={text.data} start={view.start} end={view.end} />;
   return <CodeText text={text.data} extension={extensionOf(attachment.name)} />;
 }
 
@@ -169,6 +174,7 @@ export function AttachmentViewer({ view, onClose }: AttachmentViewerProps) {
   const download = nodeFileUrl(folder, treeId, nodeId, attachment.name, true);
   const isMarkdown = extensionOf(attachment.name) === 'md';
   const kind = asText ? 'text' : attachment.kind;
+  const range = describeRange(attachment.name, view.start, view.end);
 
   useEffect(() => {
     setAsText(view.asText ?? false);
@@ -236,7 +242,8 @@ export function AttachmentViewer({ view, onClose }: AttachmentViewerProps) {
       <header className="viewer-header">
         <KindBadge name={attachment.name} />
         <span className="viewer-title truncate">{attachment.name}</span>
-        <span className="cite-lines">{formatBytes(attachment.size)}</span>
+        {attachment.size > 0 && <span className="cite-lines">{formatBytes(attachment.size)}</span>}
+        {range && <span className="cite-lines">{range}</span>}
         <span className="spacer" />
         {isMarkdown && kind === 'text' && (
           <button

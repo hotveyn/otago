@@ -362,28 +362,26 @@ function Graph({
   useEffect(() => animateTo(layout.nodes), [animateTo, layout.nodes]);
   useEffect(() => setNodes((current) => decorate(current)), [decorate]);
 
-  const edges = useMemo(
-    () =>
-      layout.edges.map((edge) => {
-        if (isGhostKey(edge.target)) return { ...edge, className: 'edge-ghost' };
-        if (isPendingFlowId(edge.target)) {
-          const key = edge.target.slice(PENDING_PREFIX.length);
-          if (key === focusKey)
-            return { ...edge, className: 'edge-chain', animated: true, zIndex: 1 };
-          const failed = statuses[key]?.status === 'failed';
-          return { ...edge, className: failed ? 'edge-failed' : 'edge-pending', zIndex: 0 };
-        }
-        const inChain = chain.has(fromFlowId(edge.target));
-        // Chain edges sit above the grey ones where sibling buses overlap, with marching dashes.
-        return {
-          ...edge,
-          className: inChain ? 'edge-chain' : undefined,
-          animated: inChain,
-          zIndex: inChain ? 1 : 0,
-        };
-      }),
-    [layout.edges, chain, statuses, focusKey],
-  );
+  const edges = useMemo(() => {
+    const decorated = layout.edges.map((edge) => {
+      if (isGhostKey(edge.target)) return { ...edge, className: 'edge-ghost' };
+      if (isPendingFlowId(edge.target)) {
+        const key = edge.target.slice(PENDING_PREFIX.length);
+        if (key === focusKey) return { ...edge, className: 'edge-chain', animated: true };
+        const failed = statuses[key]?.status === 'failed';
+        return { ...edge, className: failed ? 'edge-failed' : 'edge-pending' };
+      }
+      const inChain = chain.has(fromFlowId(edge.target));
+      return { ...edge, className: inChain ? 'edge-chain' : undefined, animated: inChain };
+    });
+    // Chain edges sit above the grey ones where sibling buses overlap (later SVGs paint on
+    // top), with marching dashes. Never via `zIndex`: a positive value lifts the edge's SVG
+    // above the node layer and the dashes show through the boxes.
+    return [
+      ...decorated.filter((edge) => edge.className !== 'edge-chain'),
+      ...decorated.filter((edge) => edge.className === 'edge-chain'),
+    ];
+  }, [layout.edges, chain, statuses, focusKey]);
 
   const pane = useRef<HTMLDivElement>(null);
   const boxOf = (id: string) =>

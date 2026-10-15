@@ -56,3 +56,11 @@ export function filterRows(rows: string[][], query: string): number[] {
     return terms.every((term) => haystack.includes(term));
   });
 }
+
+/** Tables narrower than this many columns and shorter than this many rows get no bar. */
+export const SMALL_TABLE = { columns: 5, rows: 20 } as const;
+
+/** Small tables (fewer than 5 columns and fewer than 20 rows) hide the filter / count / export bar. */
+export function isSmallTable(columns: number, rows: number): boolean {
+  return columns < SMALL_TABLE.columns && rows < SMALL_TABLE.rows;
+}

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { Agent, AttachmentStaging } from '../src/agent/index.js';
 import type { AttachmentEventData, RegistryEvent } from '../src/questions/index.js';
+import { FILE_CSP } from '../src/routes/file-headers.js';
 import { parseNodeFile, serializeNodeFile } from '../src/storage/index.js';
 import {
   askAndSettle,
@@ -34,6 +35,9 @@ const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 const saveSvg = (s: AttachmentStaging) =>
   s.saveFromBytes({ name: 'memory-layout.svg', data: Buffer.from(svg), origin: 'inline' });
+const pdf = '%PDF-1.4 tiny';
+const savePdf = (s: AttachmentStaging) =>
+  s.saveFromBytes({ name: 'paper.pdf', data: Buffer.from(pdf), origin: 'inline' });
 const savePng = (s: AttachmentStaging) =>
   s.saveFromBytes({ name: 'pic.png', data: png, origin: 'inline' });
 
@@ -303,6 +307,35 @@ describe('answers with attachments', () => {
     expect(head.statusCode).toBe(200);
     expect(head.headers['content-length']).toBe(String(svg.length));
     expect(head.body).toBe('');
+  });
+
+  it('serves PDF attachments without the sandboxing CSP (other types keep it)', async () => {
+    await setup({
+      name: 'topic',
+      attachments: [
+        { at: 0, save: saveSvg },
+        { at: 0, save: savePdf },
+      ],
+    });
+    await post({ parentId: '', text: 'Q' });
+
+    const res = await getAttachment('node=topic&name=paper.pdf');
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe(pdf);
+    expect(res.headers).toMatchObject({
+      'content-type': 'application/pdf',
+      'content-length': String(pdf.length),
+      'content-disposition': `inline; filename="paper.pdf"; filename*=UTF-8''paper.pdf`,
+      'x-content-type-options': 'nosniff',
+      'cache-control': 'no-cache',
+    });
+    expect(res.headers).not.toHaveProperty('content-security-policy');
+    const download = await getAttachment('node=topic&name=paper.pdf&download=1');
+    expect(download.headers['content-disposition']).toMatch(/^attachment; filename="paper.pdf"/);
+    expect(download.headers).not.toHaveProperty('content-security-policy');
+
+    const svgRes = await getAttachment('node=topic&name=memory-layout.svg');
+    expect(svgRes.headers['content-security-policy']).toBe(FILE_CSP);
   });
 
   it('attachment route errors', async () => {

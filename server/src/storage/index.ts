@@ -5,6 +5,7 @@ export * from './held-files.js';
 export * from './node-names.js';
 export * from './nodes.js';
 export * from './paths.js';
+export * from './source-names.js';
 export * from './sources.js';
 export * from './trees.js';
 export * from './user-files.js';

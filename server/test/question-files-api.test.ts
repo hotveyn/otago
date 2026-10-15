@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildUserPrompt } from '../src/agent/index.js';
+import { FILE_CSP } from '../src/routes/file-headers.js';
 import { EMPTY_TEXT_QUESTION } from '../src/routes/message-input.js';
 import { MAX_MESSAGE_FILE_BYTES, parseNodeFile } from '../src/storage/index.js';
 import {
@@ -175,6 +176,11 @@ describe('POST /api/trees/:tree/questions with files', () => {
     expect(companion.statusCode).toBe(200);
     expect(companion.headers['content-type']).toBe('text/markdown; charset=utf-8');
     expect(companion.body).toContain('<!-- Text extracted by Otago from files/tiny.fb2 -->');
+    // Only PDFs are exempt from the CSP: the companion text and the e-book binary keep it.
+    expect(companion.headers['content-security-policy']).toBe(FILE_CSP);
+    const binary = await getFile(done.nodeId, 'tiny.fb2');
+    expect(binary.statusCode).toBe(200);
+    expect(binary.headers['content-security-policy']).toBe(FILE_CSP);
   });
 
   it('empty text with files: stores "", asks the default question, titled and named from files', async () => {
@@ -655,6 +661,7 @@ describe('POST /api/trees/:tree/questions with files', () => {
       const { question } = await ask({ parentId: '', text: 'Q' }, [
         { name: 'same.txt', content: 'user bytes' },
         { name: 'pic.png', content: pngBytes() },
+        { name: 'report.pdf', content: '%PDF-1.4 tiny' },
       ]);
       return expectDone(question).nodeId;
     }
@@ -676,6 +683,29 @@ describe('POST /api/trees/:tree/questions with files', () => {
       const download = await getFile(node, 'same.txt', true);
       expect(download.headers['content-disposition']).toMatch(/^attachment; filename="same.txt"/);
       expect(download.headers['content-type']).toBe('text/plain; charset=utf-8');
+      expect(download.headers['content-security-policy']).toBe(FILE_CSP);
+    });
+
+    it('serves PDFs without the sandboxing CSP so the native viewer opens them at #page=N', async () => {
+      const node = await nodeWithFile();
+      const pdf = await getFile(node, 'report.pdf');
+      expect(pdf.statusCode).toBe(200);
+      expect(pdf.headers).toMatchObject({
+        'content-type': 'application/pdf',
+        'content-length': String(Buffer.byteLength('%PDF-1.4 tiny')),
+        'content-disposition': `inline; filename="report.pdf"; filename*=UTF-8''report.pdf`,
+        'x-content-type-options': 'nosniff',
+        'cache-control': 'no-cache',
+      });
+      expect(pdf.headers).not.toHaveProperty('content-security-policy');
+      expect(pdf.body).toBe('%PDF-1.4 tiny');
+      const download = await getFile(node, 'report.pdf', true);
+      expect(download.headers['content-disposition']).toMatch(/^attachment; filename="report.pdf"/);
+      expect(download.headers['content-type']).toBe('application/pdf');
+      expect(download.headers).not.toHaveProperty('content-security-policy');
+      // Non-PDF files keep the full CSP.
+      expect((await getFile(node, 'pic.png')).headers['content-security-policy']).toBe(FILE_CSP);
+      expect((await getFile(node, 'same.txt')).headers['content-security-policy']).toBe(FILE_CSP);
     });
 
     it('keeps user files and agent attachments apart', async () => {

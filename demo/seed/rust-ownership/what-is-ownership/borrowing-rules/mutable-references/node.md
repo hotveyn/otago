@@ -6,7 +6,7 @@ model: claude-opus-5-5
 I attached my attempt. Why does Rust allow only one mutable reference at a time?
 
 <!-- otago:assistant -->
-Your `files/my-attempt.md` hits exactly this rule: `a` and `b` are both `&mut scores` and both stay alive until the `println!`.
+Your `files/my-attempt.md` hits exactly this rule: `a` and `b` are both `&mut scores` and both stay alive until the `println!`[^2].
 
 The rule exists to rule out **data races at compile time**. A data race needs three things at once:
 
@@ -32,3 +32,4 @@ println!("{scores:?}"); // [10, 20, 30, 40]
 **Exercise:** write a function `fn add_bonus(scores: &mut Vec<i32>, bonus: i32)` and call it twice in a row on the same vector. Why is that allowed?
 
 [^1]: sources/rust-ownership-notes.md:27
+[^2]: files/my-attempt.md:6-7 (the two &mut borrows)

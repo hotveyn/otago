@@ -6,7 +6,7 @@ model: claude-haiku-4-5
 How does Rust prevent dangling references?
 
 <!-- otago:assistant -->
-A dangling reference points to memory that was already freed. Rust rejects any reference that could outlive its value[^1]. This does not compile:
+A dangling reference points to memory that was already freed. Rust rejects any reference that could outlive its value[^1][^2]. This does not compile:
 
 ```rust
 fn dangle() -> &String {           // error[E0106]: missing lifetime specifier
@@ -26,3 +26,4 @@ fn no_dangle() -> String {
 **Exercise:** write `fn longest(a: &str, b: &str) -> &str`. The compiler asks for a lifetime parameter. Add `'a` and explain what it promises.
 
 [^1]: sources/rust-ownership-notes.md:33-34
+[^2]: sources/rust-book-ch04-ownership.pdf:4

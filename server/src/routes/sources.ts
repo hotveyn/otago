@@ -13,7 +13,11 @@ import {
 } from '../storage/index.js';
 import { treeParams } from './schemas.js';
 
-const fileParams = treeParams.extend({ file: z.string() });
+/** `:file` is normalized to NFC like every id/name in `schemas.ts` (names are stored in NFC). */
+const fileParams = treeParams.extend({ file: z.string().normalize('NFC') });
+
+/** Uploaded names are stored in NFC (macOS browsers may send NFD). */
+const nfc = (name: string) => name.normalize('NFC');
 
 export const sourceRoutes: FastifyPluginAsyncZod<RouteDeps> = async (app, { treesDir }) => {
   app.get('/trees/:tree/sources', { schema: { params: treeParams } }, async (request) => {
@@ -26,9 +30,10 @@ export const sourceRoutes: FastifyPluginAsyncZod<RouteDeps> = async (app, { tree
     if (!request.isMultipart()) throw new InvalidInputError('Expected multipart/form-data');
     const file = await request.file();
     if (!file) throw new InvalidInputError('No file uploaded');
-    assertSourceName(file.filename);
+    const name = nfc(file.filename);
+    assertSourceName(name);
     const content = await file.toBuffer();
-    return reply.code(201).send(await saveSource(dir, file.filename, content));
+    return reply.code(201).send(await saveSource(dir, name, content));
   });
 
   app.get(
