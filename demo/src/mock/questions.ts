@@ -4,9 +4,20 @@
  * VFS like the server's `createNode`. Events have the shapes of the SSE contract
  * (`web/src/api/types.ts`) and reach the store through `connection.ts`.
  * The registry lives in memory: a page reload loses running questions (a "server restart").
- * Suggestions are generated in parallel with naming (`suggestions.ts`); they never change a
- * question's status or events.
+ * The simulated answer may end with a suggestion block (simulator from `suggestions.ts`),
+ * withheld from chunks by `SuggestionBlockFilter` and split off at the commit; contract
+ * `.claude/features/inline-suggestions/contracts/agent.ts` "Runner".
  */
+import {
+  SuggestionBlockFilter,
+  splitSuggestionBlock,
+  suggestionBlock,
+} from '../../../server/src/storage/suggestion-block';
+import {
+  finalizeSuggestions,
+  type SuggestionCandidate,
+  suggestionKey,
+} from '../../../server/src/storage/suggestions';
 import { collapseWhitespace, firstLine, truncateGraphemes } from '../../../server/src/text';
 import type {
   BlockingQuestion,
@@ -31,7 +42,7 @@ import { DEMO_MAX_FILE_BYTES, fileInfoOf, MAX_MESSAGE_FILES, userFileNameOf } fr
 import type { TreeLocks } from './locks';
 import { loremAnswer, streamTokens } from './lorem';
 import { isSameOrDescendant, toNodeName, USER_FILES_DIR, uniqueFileName } from './names';
-import type { PendingSuggestions, Suggestions } from './suggestions';
+import type { BlockSimulator } from './suggestions';
 import type { StoredFile, TreeStore } from './trees';
 
 export type Schedule = (fn: () => void, ms: number) => () => void;
@@ -44,7 +55,8 @@ export const defaultSchedule: Schedule = (fn, ms) => {
 export interface QuestionsOptions {
   trees: TreeStore;
   models: ModelsInfo;
-  suggestions: Suggestions;
+  /** The answering agent's suggestion block. */
+  suggest: BlockSimulator;
   now?: () => number;
   random?: () => number;
   schedule?: Schedule;
@@ -70,8 +82,14 @@ interface Entry {
   release: (() => void) | null;
   cancelRun: (() => void) | null;
   cancelExpiry: (() => void) | null;
-  /** Suggestion generation started at `naming`, until the commit adopts or drops it. */
-  pendingSuggestions: PendingSuggestions | null;
+}
+
+/** What one attempt finalizes its block against (read when the attempt starts). */
+interface SuggestionState {
+  candidates: SuggestionCandidate[];
+  askedKeys: Set<string>;
+  /** Length of the parent's chain (`0` when it could not be read). */
+  depth: number;
 }
 
 const MAX_TEXT_LENGTH = 50_000;
@@ -96,7 +114,7 @@ export class Questions {
   private readonly listeners = new Set<Listener>();
   private readonly trees: TreeStore;
   private readonly models: ModelsInfo;
-  private readonly suggestions: Suggestions;
+  private readonly suggest: BlockSimulator;
   private readonly now: () => number;
   private readonly random: () => number;
   private readonly schedule: Schedule;
@@ -106,7 +124,7 @@ export class Questions {
   constructor(options: QuestionsOptions) {
     this.trees = options.trees;
     this.models = options.models;
-    this.suggestions = options.suggestions;
+    this.suggest = options.suggest;
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
     this.schedule = options.schedule ?? defaultSchedule;
@@ -218,7 +236,6 @@ export class Questions {
         release,
         cancelRun: null,
         cancelExpiry: null,
-        pendingSuggestions: null,
       };
       this.entries.set(id, entry);
       this.emitQuestion(entry);
@@ -339,9 +356,31 @@ export class Questions {
   // --- Simulation -------------------------------------------------------------------------
 
   private run(entry: Entry): void {
-    const { id, attempt, text } = entry.info;
+    const { id, attempt, text, tree, parentId } = entry.info;
+    // The parent's open suggestions, read while the shared lock holds the chain in place.
+    const state = this.suggestionState(tree, parentId, text);
     const answer = withCitations(loremAnswer(this.random), this.citeRefs(entry), this.random);
-    const tokens = streamTokens(answer);
+    // Asked after the answer, so the answer's random sequence is unchanged.
+    const texts = this.suggest({
+      treeId: tree,
+      parentId,
+      question: text,
+      openSuggestions: state.candidates.map((candidate) => candidate.text),
+      attempt,
+    });
+    const raw = answer + (texts ? suggestionBlock(texts) : '');
+    const tokens = streamTokens(raw);
+    // The block never reaches chunks (nor `live.answer`, which snapshots send).
+    const filter = new SuggestionBlockFilter();
+    const append = (live: QuestionLive, shown: string) => {
+      if (!shown) return;
+      const offset = live.answer.length;
+      live.answer += shown;
+      this.emit({
+        event: 'chunk',
+        data: { id, tree: entry.info.tree, attempt, offset, text: shown },
+      });
+    };
     const failAt =
       attempt === 1 && FAIL_WORD_RE.test(text) ? Math.floor(tokens.length * 0.4) : Infinity;
     let index = 0;
@@ -360,29 +399,15 @@ export class Questions {
       const count = 1 + Math.floor(this.random() * 3);
       const chunk = tokens.slice(index, index + count).join('');
       index += count;
-      if (chunk) {
-        const offset = live.answer.length;
-        live.answer += chunk;
-        this.emit({
-          event: 'chunk',
-          data: { id, tree: entry.info.tree, attempt, offset, text: chunk },
-        });
-      }
+      if (chunk) append(live, filter.push(chunk));
       if (index < tokens.length) {
         entry.cancelRun = this.schedule(tick, 30 + Math.floor(this.random() * 40));
         return;
       }
-      // In parallel with naming, while the shared lock still holds the chain in place.
-      this.dropSuggestions(entry);
-      entry.pendingSuggestions = this.suggestions.forAnswer({
-        treeId: entry.info.tree,
-        parentId: entry.info.parentId,
-        question: this.namingQuestion(entry),
-        answer: live.answer.trim(),
-      });
+      append(live, filter.end());
       this.setStatus(entry, 'naming');
       entry.cancelRun = this.schedule(
-        () => this.commit(entry, attempt),
+        () => this.commit(entry, attempt, raw, state),
         400 + Math.floor(this.random() * 300),
       );
     };
@@ -417,15 +442,38 @@ export class Questions {
     return refs;
   }
 
-  private commit(entry: Entry, attempt: number): void {
+  /**
+   * The parent's open suggestions for one attempt (server runner step 1): the asked keys are
+   * every chain node's question plus this question. Any error → no candidates.
+   */
+  private suggestionState(tree: string, parentId: string, text: string): SuggestionState {
+    const askedKeys = new Set([suggestionKey(text)]);
+    let depth = 0;
+    try {
+      const ancestors = this.trees.suggestionChain(tree, parentId);
+      depth = ancestors.length;
+      for (const node of ancestors) askedKeys.add(suggestionKey(node.user));
+      const candidates = this.trees.suggestionCandidates(tree, ancestors, askedKeys);
+      return { candidates, askedKeys, depth };
+    } catch {
+      return { candidates: [], askedKeys, depth };
+    }
+  }
+
+  private commit(entry: Entry, attempt: number, raw: string, state: SuggestionState): void {
     if (!this.isCurrent(entry, entry.info.id, attempt) || !entry.live) return;
     const info = entry.info as RunningQuestion;
     const namingQuestion = this.namingQuestion(entry);
-    // The commit never waits for suggestions: with the list when ready, else without it.
-    const pending = entry.pendingSuggestions;
-    const ready = pending?.peek();
+    // The stored answer comes from the split (equal to `live.answer.trim()` by the filter).
+    const split = splitSuggestionBlock(raw.trim());
+    const suggestions =
+      split.items === undefined
+        ? undefined
+        : finalizeSuggestions(split.items, state.candidates, {
+            depth: state.depth,
+            askedKeys: state.askedKeys,
+          });
     const created = new Date(this.now()).toISOString();
-    const assistant = entry.live.answer.trim();
     let nodeId: string;
     try {
       nodeId = this.trees.createNode(
@@ -436,8 +484,8 @@ export class Questions {
           created,
           model: info.model,
           user: info.text,
-          assistant,
-          ...(Array.isArray(ready) && { suggestions: ready }),
+          assistant: split.answer,
+          ...(suggestions && { suggestions }),
         },
         entry.files,
       );
@@ -448,11 +496,6 @@ export class Questions {
       });
       return;
     }
-    // Still running: written to the new node later (verified against what was just written).
-    if (pending && ready === undefined) {
-      pending.adopt(info.tree, nodeId, { created, user: info.text, assistant });
-    }
-    entry.pendingSuggestions = null;
     this.releaseLock(entry);
     entry.cancelRun = null;
     const { status: _status, ...base } = info;
@@ -473,7 +516,6 @@ export class Questions {
   private fail(entry: Entry, error: QuestionError): void {
     entry.cancelRun?.();
     entry.cancelRun = null;
-    this.dropSuggestions(entry);
     this.releaseLock(entry);
     const { status: _status, ...base } = entry.info as RunningQuestion;
     const failed: FailedQuestion = {
@@ -506,7 +548,6 @@ export class Questions {
   private remove(entry: Entry, reason: QuestionRemovedReason): void {
     entry.cancelRun?.();
     entry.cancelExpiry?.();
-    this.dropSuggestions(entry);
     this.releaseLock(entry);
     this.entries.delete(entry.info.id);
     const { info } = entry;
@@ -525,12 +566,6 @@ export class Questions {
   private namingQuestion(entry: Entry): string {
     const fileNames = entry.files.map((file) => file.name);
     return entry.info.text || `Attached files: ${fileNames.join(', ')}`;
-  }
-
-  /** Abort a suggestion generation that was not adopted by a commit. */
-  private dropSuggestions(entry: Entry): void {
-    entry.pendingSuggestions?.abort();
-    entry.pendingSuggestions = null;
   }
 
   private releaseLock(entry: Entry): void {

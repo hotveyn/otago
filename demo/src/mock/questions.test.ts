@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SUGGESTIONS_MARKER } from '../../../server/src/storage/suggestion-block';
 import { ApiError } from '../../../web/src/api/client';
 import type { QuestionStreamEvent, TreeBusyDetails } from '../../../web/src/api/types';
 import { extractCitations } from '../../../web/src/lib/citations';
 import { demoConnection } from './connection';
 import { parseNodeFile } from './format';
-import { makeDemo, type ScriptStep, scriptedSuggest } from './test-helpers';
+import { type BlockStep, makeDemo, NODE, SMALL_SEED, scriptedBlocks } from './test-helpers';
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -244,6 +245,9 @@ describe('simulated questions', () => {
     const assistant = node?.assistant ?? '';
     const streamed = events.flatMap((e) => (e.event === 'chunk' ? [e.data.text] : [])).join('');
     expect(assistant).toBe(streamed.trim());
+    // The default simulator appended a block: stripped, the footnotes stay the end.
+    expect(assistant).not.toContain('<!--');
+    expect(assistant.split('\n').at(-1)).toMatch(/^\[\^\d+\]: /);
 
     const definitions = assistant.split('\n').filter((line) => /^\[\^\d+\]: /.test(line));
     expect(definitions).toHaveLength(3);
@@ -318,108 +322,230 @@ describe('simulated questions', () => {
   });
 });
 
-describe('simulated questions: suggestions at save', () => {
-  const main = { kind: 'main' } as const;
+/** Node id of the question's `done` event. */
+function doneNodeOf(events: QuestionStreamEvent[], id: string): string {
+  for (const e of events) {
+    const question = e.event === 'question' ? e.data.question : undefined;
+    if (question?.id === id && question.status === 'done') return question.nodeId;
+  }
+  throw new Error(`Question ${id} is not done`);
+}
 
-  function setup(...steps: ScriptStep[]) {
-    const script = scriptedSuggest(steps);
-    const { demo } = makeDemo({ suggest: script.simulate });
+describe('simulated questions: suggestion block', () => {
+  const main = { kind: 'main' } as const;
+  const at = (minute: number) => `2026-01-01T00:${String(minute).padStart(2, '0')}:00.000Z`;
+
+  function setup(
+    steps: BlockStep[] = [],
+    extra: Record<string, string> = {},
+    fallback?: BlockStep,
+  ) {
+    const script = scriptedBlocks(steps, fallback);
+    const { demo } = makeDemo({ seed: { ...SMALL_SEED, ...extra }, suggest: script.simulate });
     const events = record(demo);
-    const doneNode = () => {
-      const done = events.find((e) => e.event === 'question' && e.data.question.status === 'done');
-      return done?.event === 'question' && done.data.question.status === 'done'
-        ? done.data.question.nodeId
-        : undefined;
+    const chunks = () => events.flatMap((e) => (e.event === 'chunk' ? [e.data] : []));
+    const streamed = () =>
+      chunks()
+        .map((chunk) => chunk.text)
+        .join('');
+    const ask = async (parentId: string, text: string, files?: File[]) => {
+      const { id } = await demo.api.startQuestion('t', { parentId, text, context: main, files });
+      await vi.runAllTimersAsync();
+      return doneNodeOf(events, id);
     };
-    const stored = (nodeId: string) =>
-      parseNodeFile(demo.vfs.readText(`t/${nodeId}/node.md`) ?? '').suggestions;
-    return { demo, script, events, doneNode, stored };
+    const raw = (nodeId: string) => demo.vfs.readText(`t/${nodeId}/node.md`) ?? '';
+    const stored = (nodeId: string) => parseNodeFile(raw(nodeId)).suggestions;
+    const assistantOf = async (nodeId: string) =>
+      (await demo.api.getChain('t', nodeId)).at(-1)?.assistant ?? '';
+    return { demo, script, events, chunks, streamed, ask, raw, stored, assistantOf };
   }
 
-  it('a generation faster than naming is written together with the node', async () => {
-    const { demo, script, events, stored } = setup({ delayMs: 100, picks: [{ text: 'Next?' }] });
-    let versionAtCommit: number | undefined;
+  const expectContiguous = (chunks: Array<{ offset: number; text: string }>) => {
+    let text = '';
+    for (const chunk of chunks) {
+      expect(chunk.offset).toBe(text.length);
+      text += chunk.text;
+    }
+  };
+
+  it('strips the block from chunks and the answer and stores its items with the node', async () => {
+    const { demo, script, events, chunks, streamed, ask, stored, assistantOf } = setup([['Next?']]);
+    let versionAtDone: number | undefined;
     demo.questions.subscribe((event) => {
       if (event.event === 'question' && event.data.question.status === 'done') {
-        const nodeId = event.data.question.nodeId;
-        versionAtCommit = demo.vfs.stat(`t/${nodeId}/node.md`)?.version;
+        versionAtDone = demo.vfs.stat(`t/${event.data.question.nodeId}/node.md`)?.version;
       }
     });
-    await demo.api.startQuestion('t', { parentId: 'a', text: 'Why borrow?', context: main });
-    await vi.runAllTimersAsync();
+    const nodeId = await ask('a', 'Why borrow?');
+    expect(nodeId).toBe('a/why-borrow');
     expect(statuses(events)).toEqual(['streaming', 'naming', 'done']);
-    expect(stored('a/why-borrow')).toEqual([{ text: 'Next?', up: 0 }]);
-    expect(versionAtCommit).toBeDefined();
-    expect(demo.vfs.stat('t/a/why-borrow/node.md')?.version).toBe(versionAtCommit);
-    expect(script.calls[0]?.input).toMatchObject({
-      treeId: 't',
-      ancestors: [{ id: 'a', user: 'A?', assistant: 'Answer to A?' }],
-      current: { user: 'Why borrow?' },
-    });
-    expect(script.calls[0]?.input.nodeId).toBeUndefined();
+    expectContiguous(chunks());
+    expect(streamed()).not.toContain('<!--');
+    const assistant = await assistantOf(nodeId);
+    expect(assistant).toBe(streamed().trim());
+    expect(assistant).not.toContain(SUGGESTIONS_MARKER);
+    expect(stored(nodeId)).toEqual([{ text: 'Next?', up: 0 }]);
+    // Written once, together with the node.
+    expect(versionAtDone).toBeDefined();
+    expect(demo.vfs.stat(`t/${nodeId}/node.md`)?.version).toBe(versionAtDone);
+    expect(script.calls).toEqual([
+      { treeId: 't', parentId: 'a', question: 'Why borrow?', openSuggestions: [], attempt: 1 },
+    ]);
   });
 
-  it('a slower generation is adopted after the commit; a POST joins it', async () => {
-    const { demo, script, events, doneNode, stored } = setup({ picks: 'gate' });
-    await demo.api.startQuestion('t', { parentId: 'a', text: 'Slow one', context: main });
-    await vi.runAllTimersAsync();
-    expect(statuses(events)).toEqual(['streaming', 'naming', 'done']);
-    const nodeId = doneNode() ?? '';
-    expect(nodeId).toBe('a/slow-one');
+  it('never shows the block while streaming, nor to a connection opened mid-block', async () => {
+    const items = Array.from({ length: 8 }, (_, i) => `Next question number ${i + 1}?`);
+    const { demo, events, chunks, streamed, assistantOf } = setup([items]);
+    const { id } = await demo.api.startQuestion('t', {
+      parentId: 'a',
+      text: 'Why?',
+      context: main,
+    });
+    const shownWhileStreaming: string[] = [];
+    while (!statuses(events).includes('done')) {
+      await vi.advanceTimersToNextTimerAsync();
+      expectContiguous(chunks());
+      expect(streamed()).not.toContain('<!--');
+      const entry = demo.questions.snapshot().questions.find((q) => q.id === id);
+      expect(entry?.live?.answer ?? '').not.toContain('<!--');
+      if (entry?.status !== 'streaming') continue;
+      const received: QuestionStreamEvent[] = [];
+      const connection = demoConnection(demo.questions)({
+        onEvent: (event) => received.push(event),
+        onStatus: () => undefined,
+      });
+      connection.start();
+      connection.stop();
+      const snapshot = received[0];
+      const live =
+        snapshot?.event === 'snapshot'
+          ? snapshot.data.questions.find((q) => q.id === id)?.live?.answer
+          : undefined;
+      expect(live).toBeDefined();
+      expect(live).not.toContain('<!--');
+      shownWhileStreaming.push(live ?? '');
+    }
+    const assistant = await assistantOf(doneNodeOf(events, id));
+    // Many streaming steps already showed the whole answer: the block was being withheld.
+    expect(shownWhileStreaming.filter((text) => text.trim() === assistant).length).toBeGreaterThan(
+      5,
+    );
+  });
+
+  it('no block: no suggestions key, the node inherits the parent list', async () => {
+    const { ask, raw, stored, demo } = setup([undefined], {
+      't/a/node.md': NODE('A?', at(1), [{ text: 'P1', up: 0 }]),
+    });
+    const nodeId = await ask('a', 'Why?');
+    expect(raw(nodeId)).not.toContain('suggestions:');
     expect(stored(nodeId)).toBeUndefined();
-    expect(demo.suggestions.inFlight()).toBe(1);
-    expect(await demo.api.getSuggestions('t', nodeId)).toMatchObject({ state: 'missing' });
-    const post = demo.api.generateSuggestions('t', nodeId);
-    expect(script.calls).toHaveLength(1);
-    script.calls[0]?.open([{ text: 'Later?' }]);
-    await vi.runAllTimersAsync();
-    expect(await post).toEqual({
-      node: nodeId,
-      state: 'ready',
-      suggestions: [{ text: 'Later?', target: nodeId, up: 0 }],
+    expect((await demo.api.getSuggestions('t', nodeId)).suggestions).toEqual([
+      { text: 'P1', target: 'a', up: 1 },
+    ]);
+  });
+
+  it('the marker alone stores an empty list and stops inheritance', async () => {
+    const { ask, stored, demo } = setup([[]], {
+      't/a/node.md': NODE('A?', at(1), [{ text: 'P1', up: 0 }]),
     });
-    expect(stored(nodeId)).toEqual([{ text: 'Later?', up: 0 }]);
-    expect(script.calls).toHaveLength(1);
-    expect(demo.suggestions.inFlight()).toBe(0);
+    const nodeId = await ask('a', 'Why?');
+    expect(stored(nodeId)).toEqual([]);
+    expect((await demo.api.getSuggestions('t', nodeId)).suggestions).toEqual([]);
   });
 
-  it('a failed generation leaves the node missing and changes no event', async () => {
-    const { demo, events, doneNode, stored } = setup({ delayMs: 10, picks: 'fail' });
-    await demo.api.startQuestion('t', { parentId: '', text: 'Q', context: main });
-    await vi.runAllTimersAsync();
-    expect(statuses(events)).toEqual(['streaming', 'naming', 'done']);
-    expect(stored(doneNode() ?? '')).toBeUndefined();
+  it('a verbatim copy of an open suggestion keeps pointing at its owner', async () => {
+    const { ask, stored, demo } = setup([['Глава 4'], ['Глава 4!']], {
+      't/a/node.md': NODE('A?', at(1), [{ text: 'Глава 4', up: 0 }]),
+    });
+    const kept = await ask('a', 'Термин?');
+    expect(stored(kept)).toEqual([{ text: 'Глава 4', up: 1 }]);
+    expect((await demo.api.getSuggestions('t', kept)).suggestions).toEqual([
+      { text: 'Глава 4', target: 'a', up: 1 },
+    ]);
+    // An edited copy is a new own item.
+    const edited = await ask('a', 'Ещё термин?');
+    expect(stored(edited)).toEqual([{ text: 'Глава 4!', up: 0 }]);
   });
 
-  it('cancel during naming aborts the generation: no node, nothing written later', async () => {
-    const { demo, script, events } = setup({ delayMs: 5_000, picks: [{ text: 'Never?' }] });
-    const question = await demo.api.startQuestion('t', { parentId: 'c', text: 'Q', context: main });
-    while (!statuses(events).includes('naming')) await vi.advanceTimersToNextTimerAsync();
-    expect(script.calls).toHaveLength(1);
-    await demo.api.cancelQuestion(question.id);
-    expect(script.calls[0]?.input.signal.aborted).toBe(true);
+  it('keeping an item twice stores it two levels up', async () => {
+    const { ask, stored, demo } = setup([['X'], ['X']], {
+      't/g/node.md': NODE('G?', at(1), [{ text: 'X', up: 0 }]),
+    });
+    const parent = await ask('g', 'Side?');
+    expect(stored(parent)).toEqual([{ text: 'X', up: 1 }]);
+    const child = await ask(parent, 'Deeper?');
+    expect(stored(child)).toEqual([{ text: 'X', up: 2 }]);
+    expect((await demo.api.getSuggestions('t', child)).suggestions).toEqual([
+      { text: 'X', target: 'g', up: 2 },
+    ]);
+  });
+
+  it('finalization drops the question itself, empty texts and duplicates; no cap', async () => {
+    const ten = Array.from({ length: 10 }, (_, i) => `Item ${i + 1}?`);
+    const { ask, stored } = setup([['Why?', '', 'Dup', ' Dup ', ...ten]]);
+    const nodeId = await ask('a', 'Why?');
+    expect(stored(nodeId)).toEqual([
+      { text: 'Dup', up: 0 },
+      ...ten.map((text) => ({ text, up: 0 })),
+    ]);
+  });
+
+  it('cancel while the block is withheld creates no node and shows no block', async () => {
+    const items = Array.from({ length: 8 }, (_, i) => `Next question number ${i + 1}?`);
+    const { demo, events, chunks, streamed } = setup([items]);
+    const before = demo.vfs.list('t/a');
+    const { id } = await demo.api.startQuestion('t', {
+      parentId: 'a',
+      text: 'Why?',
+      context: main,
+    });
+    // Step until two ticks in a row emitted nothing: the block's tokens are being pushed.
+    let quiet = 0;
+    while (quiet < 2) {
+      const count = chunks().length;
+      await vi.advanceTimersToNextTimerAsync();
+      expect(statuses(events)).toEqual(['streaming']);
+      quiet = chunks().length === count ? quiet + 1 : 0;
+    }
+    await demo.api.cancelQuestion(id);
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(demo.vfs.list('t/c')).toEqual(['node.md']);
-    expect(demo.suggestions.inFlight()).toBe(0);
+    expect(events.at(-1)).toMatchObject({ event: 'removed', data: { reason: 'cancelled' } });
+    expect(demo.vfs.list('t/a')).toEqual(before);
+    expect(streamed()).not.toContain('<!--');
   });
 
-  it('a failing answer starts no generation; its retry starts one at naming', async () => {
-    const { demo, script, events, doneNode, stored } = setup({
-      delayMs: 10,
-      picks: [{ text: 'After retry?' }],
-    });
-    const question = await demo.api.startQuestion('t', {
-      parentId: '',
+  it('a failed attempt stores nothing; the retry asks again with recomputed candidates', async () => {
+    const { demo, script, events, stored } = setup(
+      [],
+      { 't/a/node.md': NODE('A?', at(1), [{ text: 'P1', up: 0 }]) },
+      (input) => (input.attempt === 1 ? ['First'] : ['Second']),
+    );
+    const { id } = await demo.api.startQuestion('t', {
+      parentId: 'a',
       text: 'Please fail',
       context: main,
     });
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(statuses(events)).toEqual(['streaming', 'failed']);
-    expect(script.calls).toHaveLength(0);
-    await demo.api.retryQuestion(question.id);
+    const failed = demo.questions.snapshot().questions[0];
+    expect(failed).toMatchObject({ status: 'failed' });
+    expect(failed?.live?.answer).not.toContain('<!--');
+    await demo.api.retryQuestion(id);
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(script.calls).toHaveLength(1);
-    expect(stored(doneNode() ?? '')).toEqual([{ text: 'After retry?', up: 0 }]);
+    const nodeId = doneNodeOf(events, id);
+    expect(stored(nodeId)).toEqual([{ text: 'Second', up: 0 }]);
+    expect(
+      script.calls.map(({ attempt, openSuggestions }) => ({ attempt, openSuggestions })),
+    ).toEqual([
+      { attempt: 1, openSuggestions: ['P1'] },
+      { attempt: 2, openSuggestions: ['P1'] },
+    ]);
+  });
+
+  it('a files-only message stores the items of its block', async () => {
+    const { ask, stored, script } = setup([['About the file?']]);
+    const nodeId = await ask('', '', [new File(['one\ntwo\n'], 'draft.md')]);
+    expect(script.calls[0]?.question).toBe('');
+    expect(stored(nodeId)).toEqual([{ text: 'About the file?', up: 0 }]);
   });
 
   it('end to end with the default simulator: plan steps are inherited and hidden once asked', async () => {
@@ -428,12 +554,7 @@ describe('simulated questions: suggestions at save', () => {
     const ask = async (parentId: string, text: string) => {
       const { id } = await demo.api.startQuestion('t', { parentId, text, context: main });
       await vi.runAllTimersAsync();
-      const done = events.find(
-        (e) =>
-          e.event === 'question' && e.data.question.id === id && e.data.question.status === 'done',
-      );
-      if (done?.event !== 'question' || done.data.question.status !== 'done') throw new Error(id);
-      return done.data.question.nodeId;
+      return doneNodeOf(events, id);
     };
     const step1 = "Let's start with step 1 of ownership";
     const step2 = "Let's go to step 2 of ownership";
@@ -448,7 +569,7 @@ describe('simulated questions: suggestions at save', () => {
 
     const child = await ask(plan, step1);
     const stored = parseNodeFile(demo.vfs.readText(`t/${child}/node.md`) ?? '').suggestions;
-    expect(stored?.filter((item) => item.up > 0)).toEqual([
+    expect(stored).toEqual([
       { text: step2, up: 1 },
       { text: step3, up: 1 },
     ]);

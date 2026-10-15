@@ -1,5 +1,4 @@
-import { type QueryClient, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef } from 'react';
+import { type QueryClient, useQuery } from '@tanstack/react-query';
 import { nameOf } from '../lib/tree';
 import { api } from './client';
 import type {
@@ -8,7 +7,6 @@ import type {
   FileFolder,
   SourceInfo,
   Suggestion,
-  SuggestionsReady,
   TreeDetail,
   TreeMeta,
 } from './types';
@@ -110,64 +108,19 @@ export function seedDoneChain(
   ]);
 }
 
-/** In-flight lazy generations, keyed `${tree}\0${node}`. */
-const generating = new Map<string, Promise<SuggestionsReady>>();
-
 /**
- * Lazy generation of a node's suggestions, at most one POST per (tree, node) at a time in
- * this page (several panels, StrictMode double effects). A 200 goes into the query cache.
- * The entry is dropped when the POST ends either way, so a later open can try again.
- */
-export function generateSuggestionsOnce(
-  queryClient: QueryClient,
-  tree: string,
-  node: string,
-): Promise<SuggestionsReady> {
-  const id = `${tree}\0${node}`;
-  const running = generating.get(id);
-  if (running) return running;
-  const promise = api
-    .generateSuggestions(tree, node)
-    .then((result) => {
-      queryClient.setQueryData(keys.suggestions(tree, node), result);
-      return result;
-    })
-    .finally(() => generating.delete(id));
-  generating.set(id, promise);
-  return promise;
-}
-
-/**
- * Suggestions of a saved node: `null` while unknown or missing, else the server's resolved
- * list. A `missing` node is generated once per mount and node (a failure is retried only when
- * the node is opened again). No placeholder data: a previous node's buttons would send to
- * the wrong targets.
+ * Suggestions of a saved node: `null` while unknown (loading, error, disabled), else the
+ * server's resolved list (final; no lazy generation). No placeholder data: a previous node's
+ * buttons would send to the wrong targets.
  */
 export function useNodeSuggestions(tree: string, node: string | null): Suggestion[] | null {
-  const queryClient = useQueryClient();
   const enabled = node !== null && node !== '';
   const query = useQuery({
     queryKey: keys.suggestions(tree, node ?? ''),
     queryFn: () => api.getSuggestions(tree, node ?? ''),
     enabled,
   });
-  const data = enabled ? query.data : undefined;
-  const state = data?.state;
-  // The node this hook shows, and whether it already POSTed for it. Opening another node
-  // resets the attempt; refetches that stay `missing` (invalidation) do not.
-  const opened = useRef<string | null>(null);
-  const attempted = useRef(false);
-  useEffect(() => {
-    const id = enabled && node !== null ? `${tree}\0${node}` : null;
-    if (opened.current !== id) {
-      opened.current = id;
-      attempted.current = false;
-    }
-    if (id === null || node === null || state !== 'missing' || attempted.current) return;
-    attempted.current = true;
-    void generateSuggestionsOnce(queryClient, tree, node).catch(() => undefined);
-  }, [queryClient, tree, node, enabled, state]);
-  return data?.state === 'ready' ? data.suggestions : null;
+  return enabled && query.data ? query.data.suggestions : null;
 }
 
 export const useTrees = () => useQuery({ queryKey: keys.trees, queryFn: api.listTrees });

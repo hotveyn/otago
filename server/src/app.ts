@@ -20,7 +20,6 @@ import { suggestionRoutes } from './routes/suggestions.js';
 import { treeRoutes } from './routes/trees.js';
 import { userFileRoutes } from './routes/user-files.js';
 import { MAX_SOURCE_BYTES } from './storage/index.js';
-import { Suggestions } from './suggestions/index.js';
 
 export { MAX_SOURCE_BYTES };
 
@@ -37,11 +36,6 @@ export interface AppDeps {
    * Closed with the app either way.
    */
   questions?: Questions;
-  /**
-   * Suggested prompts. Default: a new service on `agent` with `models.suggest`. Pass the same
-   * instance to an injected `questions` so saved answers get theirs. Closed with the app.
-   */
-  suggestions?: Suggestions;
 }
 
 export interface RouteDeps {
@@ -51,7 +45,6 @@ export interface RouteDeps {
   locks: TreeLocks;
   allowPrivateUrls: boolean;
   questions: Questions;
-  suggestions: Suggestions;
 }
 
 export async function buildApp(deps: AppDeps) {
@@ -62,14 +55,6 @@ export async function buildApp(deps: AppDeps) {
   const locks = deps.locks ?? new TreeLocks();
   const allowPrivateUrls = deps.allowPrivateUrls ?? false;
   const models = deps.models ?? DEFAULT_MODELS;
-  const suggestions =
-    deps.suggestions ??
-    new Suggestions({
-      agent: deps.agent,
-      treesDir: deps.treesDir,
-      model: models.suggest,
-      log: app.log,
-    });
   const questions =
     deps.questions ??
     new Questions({
@@ -78,7 +63,6 @@ export async function buildApp(deps: AppDeps) {
       treesDir: deps.treesDir,
       allowPrivateUrls,
       log: app.log,
-      suggestions,
     });
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
@@ -110,8 +94,6 @@ export async function buildApp(deps: AppDeps) {
   });
   app.addHook('onClose', async () => {
     await questions.close();
-    // Generations that outlived their question (or lazy ones) are aborted; nothing is written.
-    await suggestions.close();
   });
 
   await app.register(multipart, { limits: { fileSize: MAX_SOURCE_BYTES, files: 1 } });
@@ -123,7 +105,6 @@ export async function buildApp(deps: AppDeps) {
     locks,
     allowPrivateUrls,
     questions,
-    suggestions,
   };
   await app.register(
     async (api) => {

@@ -8,6 +8,7 @@ export * from './nodes.js';
 export * from './paths.js';
 export * from './source-names.js';
 export * from './sources.js';
+export * from './suggestion-block.js';
 export * from './suggestions.js';
 export * from './trees.js';
 export * from './user-files.js';

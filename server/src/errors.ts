@@ -8,7 +8,6 @@ export class AppError extends Error {
       | QuestionConflictCode
       | UploadErrorCode
       | NotFoundCode
-      | SuggestionErrorCode
       | (string & {}),
     /** Optional extra data sent as `details` in the JSON error body. */
     readonly details?: unknown,
@@ -94,22 +93,5 @@ export class AttachmentError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'AttachmentError';
-  }
-}
-
-/** Machine-readable reason of a 502 on the suggestion routes. */
-export type SuggestionErrorCode = 'suggestions_failed';
-
-/**
- * 502: suggestion generation failed, timed out, returned an unparseable reply, or the node file
- * changed meanwhile (the result was discarded). The node's list stays missing.
- */
-export class SuggestionsFailedError extends AppError {
-  constructor() {
-    super(
-      502,
-      'Could not generate suggestions. They will be retried the next time the node is opened.',
-      'suggestions_failed',
-    );
   }
 }

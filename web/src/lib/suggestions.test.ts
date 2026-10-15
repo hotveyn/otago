@@ -20,7 +20,6 @@ import {
   askSuggestion,
   hasInFlightSuggestion,
   inFlightSuggestionKeys,
-  MAX_SUGGESTIONS,
   SUGGESTION_LABEL_GRAPHEMES,
   suggestionKey,
   suggestionLabel,
@@ -212,11 +211,23 @@ describe('visibleSuggestions', () => {
     expect(visibleSuggestions(list, [], main)).toEqual([list[0]]);
   });
 
-  it('caps and keeps the order', () => {
-    const list = Array.from({ length: 7 }, (_, i) => own(`q${i}`));
-    const shown = visibleSuggestions(list, [], main);
-    expect(shown).toHaveLength(MAX_SUGGESTIONS);
-    expect(shown).toEqual(list.slice(0, MAX_SUGGESTIONS));
+  it('shows every item in order (no cap)', () => {
+    const list = Array.from({ length: 12 }, (_, i) => own(`q${i}`));
+    expect(visibleSuggestions(list, [], main)).toEqual(list);
+  });
+
+  it('passes an inherited-only list (ancestor fallback) through the same rules', () => {
+    const list = [
+      inherited('Глава 4', 'план/глава-3', 1),
+      inherited('Глава 5', 'план/глава-3', 1),
+      inherited('Обзор', 'план', 2),
+    ];
+    expect(visibleSuggestions(list, [], main)).toEqual(list);
+    expect(visibleSuggestions(list, [], { anchor: 'план/глава-3' })).toEqual([list[0], list[1]]);
+    expect(visibleSuggestions(list, [key('план/глава-3', 'Глава 4')], main)).toEqual([
+      list[1],
+      list[2],
+    ]);
   });
 
   it('maps [] to []', () => {

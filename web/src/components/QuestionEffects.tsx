@@ -63,8 +63,9 @@ export function QuestionEffects({ url, navigate }: QuestionEffectsProps) {
         const text = store.getState().streams[question.id]?.text;
         if (text !== undefined) seedDoneChain(queryClient, question, text);
       }
-      // Suggestions too: the new node makes its text "used" on the server. Awaited before the
-      // ack, which stops hiding the clicked suggestion, so it never flickers back.
+      // Suggestions too: the new node makes its text "used" on the server, and its own list is
+      // already in node.md, so the same refetch brings its buttons. Awaited before the ack,
+      // which stops hiding the clicked suggestion, so it never flickers back.
       void Promise.all([
         queryClient
           .invalidateQueries({ queryKey: keys.tree(question.tree) })

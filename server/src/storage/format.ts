@@ -17,7 +17,7 @@ export interface NodeFile {
   model: string;
   user: string;
   assistant: string;
-  /** `undefined` = MISSING (key absent or not an array); an array = STORED (maybe empty). */
+  /** `undefined` = no own list (key absent or not an array); an array = STORED (maybe empty). */
   suggestions?: StoredSuggestion[];
 }
 
@@ -68,7 +68,7 @@ export function serializeTreeFile(tree: TreeFile): string {
 
 /**
  * Frontmatter of a node file. A hand-broken `suggestions:` value must not make the whole node
- * unreadable: when the YAML fails, it is parsed again without that key (the list is MISSING).
+ * unreadable: when the YAML fails, it is parsed again without that key (no own list).
  */
 function parseNodeFrontmatter(text: string): { data: Record<string, unknown>; body: string } {
   try {

@@ -4,7 +4,7 @@ import { suggestionLabel, suggestionSource } from '../../lib/suggestions';
 import { Button } from '../ui/Button';
 
 interface SuggestionListProps {
-  /** Already filtered and capped (`useSuggestions`). */
+  /** Already filtered (`useSuggestions`). */
   items: Suggestion[];
   onAsk: (suggestion: Suggestion) => void;
 }

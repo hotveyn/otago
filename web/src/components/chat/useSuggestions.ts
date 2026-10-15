@@ -27,8 +27,8 @@ const EMPTY: Suggestion[] = [];
 const NO_TARGETS: string[] = [];
 
 /**
- * Suggested questions of one chat panel: the node's list (fetched, generated lazily once when
- * missing) minus the questions already in flight, shown only once the store is hydrated (a
+ * Suggested questions of one chat panel: the node's list (fetched; the server already
+ * resolved the ancestor fallback) minus the questions already in flight, shown only once the store is hydrated (a
  * question from another tab or before a reload would otherwise be asked twice).
  */
 export function useSuggestions({

@@ -6,7 +6,6 @@ import {
   parseTreeFile,
   serializeNodeFile,
   serializeTreeFile,
-  spliceSuggestions,
 } from './format';
 
 describe('format', () => {
@@ -129,15 +128,6 @@ describe('format: suggestions', () => {
     const lines = text.split('\n');
     expect(lines[lines.indexOf('---', 1) - 1]).toBe('suggestions: [{"text":"Next?","up":0}]');
     expect(serializeNodeFile({ ...base, suggestions: [] })).toBe(withLine('suggestions: []'));
-  });
-
-  it('splices a later write and keeps every other byte', () => {
-    const raw = PRE_FEATURE.replace('A.\n', 'A.\n\n  trailing  \n');
-    const spliced = spliceSuggestions(raw, [{ text: 'X', up: 0 }]);
-    expect(spliced).toBe(raw.replace('---\n<!--', 'suggestions: [{"text":"X","up":0}]\n---\n<!--'));
-    expect(spliceSuggestions(spliced, [])).toBe(
-      raw.replace('---\n<!--', 'suggestions: []\n---\n<!--'),
-    );
   });
 
   it('reads the server-written form (gray-matter frontmatter + spliced line)', () => {

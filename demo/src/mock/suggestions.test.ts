@@ -1,14 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  type StoredSuggestion,
-  type SuggestionCandidate,
-  setSuggestionsLine,
-} from '../../../server/src/storage/suggestions';
+import type { StoredSuggestion } from '../../../server/src/storage/suggestions';
 import { ApiError } from '../../../web/src/api/client';
-import { SUGGESTIONS_FAILED_MESSAGE } from './errors';
 import { parseNodeFile } from './format';
-import { simulateSuggestions } from './suggestions';
-import { makeDemo, NODE, type ScriptStep, SMALL_SEED, scriptedSuggest } from './test-helpers';
+import { type SimulatedBlockInput, simulateSuggestionBlock, suggestionTopic } from './suggestions';
+import { type BlockStep, makeDemo, NODE, SMALL_SEED, scriptedBlocks } from './test-helpers';
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -29,9 +24,10 @@ async function apiError(promise: Promise<unknown>): Promise<ApiError> {
 
 const at = (minute: number) => `2026-01-01T00:${String(minute).padStart(2, '0')}:00.000Z`;
 const own = (...texts: string[]): StoredSuggestion[] => texts.map((text) => ({ text, up: 0 }));
+const main = { kind: 'main' } as const;
 
-function setup(extra: Record<string, string> = {}, steps: ScriptStep[] = []) {
-  const script = scriptedSuggest(steps);
+function setup(extra: Record<string, string> = {}, steps: BlockStep[] = []) {
+  const script = scriptedBlocks(steps);
   const { demo, storage } = makeDemo({
     seed: { ...SMALL_SEED, ...extra },
     suggest: script.simulate,
@@ -65,18 +61,55 @@ const CHAIN_VIEW = [
 ];
 
 describe('suggestions: GET', () => {
-  it('reports missing and stored empty lists', async () => {
-    const { demo } = setup({ 't/e/node.md': NODE('E?', at(10), []) });
-    expect(await demo.api.getSuggestions('t', 'a')).toEqual({
-      node: 'a',
-      state: 'missing',
-      suggestions: [],
+  it('reports stored empty lists; a node without a list inherits', async () => {
+    const { demo } = setup({
+      't/e/node.md': NODE('E?', at(10), []),
+      't/p/node.md': NODE('P?', at(11), own('N1')),
+      't/p/q/node.md': NODE('Q?', at(12)),
+      't/g/node.md': NODE('G?', at(13), own('X')),
+      't/g/s/node.md': NODE('S?', at(14), []),
+      't/g/s/u/node.md': NODE('U?', at(15)),
     });
     expect(await demo.api.getSuggestions('t', 'e')).toEqual({
       node: 'e',
       state: 'ready',
       suggestions: [],
     });
+    // No list and no stored ancestor.
+    expect(await demo.api.getSuggestions('t', 'a')).toEqual({
+      node: 'a',
+      state: 'ready',
+      suggestions: [],
+    });
+    expect(await demo.api.getSuggestions('t', 'p/q')).toEqual({
+      node: 'p/q',
+      state: 'ready',
+      suggestions: [{ text: 'N1', target: 'p', up: 1 }],
+    });
+    // A stored empty list stops the fallback.
+    expect((await demo.api.getSuggestions('t', 'g/s/u')).suggestions).toEqual([]);
+  });
+
+  it('the fallback drops an item asked between the list and the node', async () => {
+    const { demo } = setup({
+      't/g/node.md': NODE('G?', at(10), own('X', 'Y')),
+      't/g/p/node.md': NODE('X', at(11)),
+      't/g/p/v/node.md': NODE('V?', at(12)),
+    });
+    expect((await demo.api.getSuggestions('t', 'g/p/v')).suggestions).toEqual([
+      { text: 'Y', target: 'g', up: 2 },
+    ]);
+    // `X` is also used under `g`.
+    expect((await demo.api.getSuggestions('t', 'g')).suggestions).toEqual([
+      { text: 'Y', target: 'g', up: 0 },
+    ]);
+  });
+
+  it('is not capped', async () => {
+    const texts = ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7'];
+    const { demo } = setup({ 't/n/node.md': NODE('N?', at(10), own(...texts)) });
+    const { suggestions } = await demo.api.getSuggestions('t', 'n');
+    expect(suggestions.map((item) => item.text)).toEqual(texts);
   });
 
   it('resolves own and inherited items along the chain; own wins over a duplicate', async () => {
@@ -111,26 +144,20 @@ describe('suggestions: GET', () => {
     expect((await demo.api.getSuggestions('t', 'g/p/v')).suggestions).toEqual(CHAIN_VIEW);
   });
 
-  it('validates like the server (GET and POST)', async () => {
+  it('validates like the server; there is no POST', async () => {
     const { demo, script } = setup();
-    for (const call of [demo.api.getSuggestions, demo.api.generateSuggestions]) {
-      const root = await apiError(call('t', ''));
-      expect(root).toMatchObject({ status: 400, message: 'The tree root has no suggestions' });
-      expect(await apiError(call('t', 'A B'))).toMatchObject({ status: 400 });
-      expect(await apiError(call('t', 'a/files'))).toMatchObject({ status: 400 });
-      expect(await apiError(call('t', 'a'.repeat(1001)))).toMatchObject({
-        status: 400,
-        message: 'Invalid input',
-      });
-      expect(await apiError(call('nope', 'a'))).toMatchObject({
-        status: 404,
-        code: 'tree_not_found',
-      });
-      expect(await apiError(call('t', 'zz'))).toMatchObject({
-        status: 404,
-        code: 'node_not_found',
-      });
-    }
+    const get = demo.api.getSuggestions;
+    const root = await apiError(get('t', ''));
+    expect(root).toMatchObject({ status: 400, message: 'The tree root has no suggestions' });
+    expect(await apiError(get('t', 'A B'))).toMatchObject({ status: 400 });
+    expect(await apiError(get('t', 'a/files'))).toMatchObject({ status: 400 });
+    expect(await apiError(get('t', 'a'.repeat(1001)))).toMatchObject({
+      status: 400,
+      message: 'Invalid input',
+    });
+    expect(await apiError(get('nope', 'a'))).toMatchObject({ status: 404, code: 'tree_not_found' });
+    expect(await apiError(get('t', 'zz'))).toMatchObject({ status: 404, code: 'node_not_found' });
+    expect('generateSuggestions' in demo.api).toBe(false);
     expect(script.calls).toHaveLength(0);
   });
 
@@ -139,249 +166,77 @@ describe('suggestions: GET', () => {
     const response = await demo.api.getSuggestions('t', 'ёж'.normalize('NFD'));
     expect(response).toMatchObject({ node: 'ёж', state: 'ready' });
   });
+
+  it('never conflicts: reads while a question of the tree streams', async () => {
+    const { demo } = setup({ 't/n/node.md': NODE('N?', at(10), own('Next?')) });
+    await demo.api.startQuestion('t', { parentId: 'c', text: 'Busy?', context: main });
+    expect((await apiError(demo.api.moveNodes('t', ['a'], 'c'))).status).toBe(409);
+    expect((await demo.api.getSuggestions('t', 'n')).suggestions).toEqual([
+      { text: 'Next?', target: 'n', up: 0 },
+    ]);
+  });
 });
 
-describe('suggestions: POST (lazy generation)', () => {
-  it('generates once, splices the line into node.md and answers ready', async () => {
-    const { demo, script, read } = setup({}, [{ delayMs: 100, picks: [{ text: 'Next one?' }] }]);
-    const before = read('t/a/node.md');
-    const post = demo.api.generateSuggestions('t', 'a');
-    await vi.advanceTimersByTimeAsync(100);
-    expect(await post).toEqual({
-      node: 'a',
-      state: 'ready',
-      suggestions: [{ text: 'Next one?', target: 'a', up: 0 }],
+describe('suggestions: candidates offered to the answering agent', () => {
+  const ask = async (demo: ReturnType<typeof setup>['demo'], parentId: string, text: string) => {
+    await demo.api.startQuestion('t', { parentId, text, context: main });
+    await vi.runAllTimersAsync();
+  };
+
+  it("offers the parent's open items, minus the ones a live child asks", async () => {
+    const { demo, script } = setup({
+      't/plan/node.md': NODE('Plan?', at(10), own('A', 'B', 'C')),
+      't/plan/a/node.md': NODE('A', at(11)),
     });
-    expect(script.calls).toHaveLength(1);
-    expect(script.calls[0]?.input).toMatchObject({
+    await ask(demo, 'plan', 'Other?');
+    expect(script.calls[0]).toEqual<SimulatedBlockInput>({
       treeId: 't',
-      nodeId: 'a',
-      ancestors: [],
-      current: { user: 'A?', assistant: 'Answer to A?' },
-      candidates: [],
-    });
-    expect(read('t/a/node.md')).toBe(setSuggestionsLine(before, own('Next one?')));
-    expect(await demo.api.generateSuggestions('t', 'a')).toMatchObject({ state: 'ready' });
-    expect(script.calls).toHaveLength(1);
-  });
-
-  it('answers a stored list at once, without a generation', async () => {
-    const { demo, script } = setup({ 't/e/node.md': NODE('E?', at(10), []) });
-    expect(await demo.api.generateSuggestions('t', 'e')).toEqual({
-      node: 'e',
-      state: 'ready',
-      suggestions: [],
-    });
-    expect(script.calls).toHaveLength(0);
-  });
-
-  it('dedups concurrent requests into one generation', async () => {
-    const { demo, script } = setup({}, [{ picks: 'gate' }]);
-    const first = demo.api.generateSuggestions('t', 'a');
-    const second = demo.api.generateSuggestions('t', 'a');
-    expect(await demo.api.getSuggestions('t', 'a')).toMatchObject({ state: 'missing' });
-    expect(script.calls).toHaveLength(1);
-    expect(demo.suggestions.inFlight()).toBe(1);
-    script.calls[0]?.open([{ text: 'Only once?' }]);
-    await vi.runAllTimersAsync();
-    const [a, b] = await Promise.all([first, second]);
-    expect(a).toEqual(b);
-    expect(a.suggestions).toEqual([{ text: 'Only once?', target: 'a', up: 0 }]);
-    expect(script.calls).toHaveLength(1);
-    expect(demo.suggestions.inFlight()).toBe(0);
-  });
-
-  it('a failure answers 502, leaves the node missing, and the next POST retries', async () => {
-    const { demo, script, read } = setup({}, [{ delayMs: 50, picks: 'fail' }]);
-    const before = read('t/a/node.md');
-    const failed = apiError(demo.api.generateSuggestions('t', 'a'));
-    await vi.runAllTimersAsync();
-    expect(await failed).toMatchObject({
-      status: 502,
-      code: 'suggestions_failed',
-      message: SUGGESTIONS_FAILED_MESSAGE,
-    });
-    expect(SUGGESTIONS_FAILED_MESSAGE).toBe(
-      'Could not generate suggestions. They will be retried the next time the node is opened.',
-    );
-    expect(read('t/a/node.md')).toBe(before);
-    expect(demo.suggestions.inFlight()).toBe(0);
-    const retry = demo.api.generateSuggestions('t', 'a');
-    await vi.runAllTimersAsync();
-    expect(await retry).toMatchObject({ state: 'ready' });
-    expect(script.calls).toHaveLength(2);
-  });
-
-  describe('takes no lock: structural edits succeed while generating', () => {
-    it('moved: 404 node_not_found, nothing written anywhere', async () => {
-      const { demo, script, read } = setup({}, [{ picks: 'gate' }]);
-      const post = apiError(demo.api.generateSuggestions('t', 'a/b'));
-      await expect(demo.api.moveNodes('t', ['a/b'], 'c')).resolves.toMatchObject({
-        moved: { 'a/b': 'c/b' },
-      });
-      script.calls[0]?.open([{ text: 'Lost?' }]);
-      await vi.runAllTimersAsync();
-      expect(await post).toMatchObject({ status: 404, code: 'node_not_found' });
-      expect(read('t/c/b/node.md')).not.toContain('suggestions:');
-      expect(demo.vfs.exists('t/a/b')).toBe(false);
-    });
-
-    it('renamed: 404 node_not_found', async () => {
-      const { demo, script, read } = setup({}, [{ picks: 'gate' }]);
-      const post = apiError(demo.api.generateSuggestions('t', 'a/b'));
-      await expect(demo.api.renameNode('t', 'a/b', 'bee')).resolves.toMatchObject({ id: 'a/bee' });
-      script.calls[0]?.open([{ text: 'Lost?' }]);
-      await vi.runAllTimersAsync();
-      expect(await post).toMatchObject({ status: 404, code: 'node_not_found' });
-      expect(read('t/a/bee/node.md')).not.toContain('suggestions:');
-      expect(demo.vfs.exists('t/a/b')).toBe(false);
-    });
-
-    it('deleted: 404, the trash is untouched and no folder is recreated', async () => {
-      const { demo, script, read } = setup({}, [{ picks: 'gate' }]);
-      const post = apiError(demo.api.generateSuggestions('t', 'a/b'));
-      const { deleted } = await demo.api.deleteNodes('t', ['a/b']);
-      const trash = `t/${deleted['a/b']}/node.md`;
-      const before = read(trash);
-      script.calls[0]?.open([{ text: 'Lost?' }]);
-      await vi.runAllTimersAsync();
-      expect(await post).toMatchObject({ status: 404, code: 'node_not_found' });
-      expect(read(trash)).toBe(before);
-      expect(demo.vfs.exists('t/a/b')).toBe(false);
-    });
-
-    it('restore succeeds and the generation is still written', async () => {
-      const { demo, script, stored } = setup({}, [{ picks: 'gate' }]);
-      const { deleted } = await demo.api.deleteNodes('t', ['a/b']);
-      const post = demo.api.generateSuggestions('t', 'c');
-      await expect(demo.api.restoreNodes('t', [deleted['a/b'] as string])).resolves.toMatchObject({
-        restored: { [deleted['a/b'] as string]: 'a/b' },
-      });
-      script.calls[0]?.open([{ text: 'Kept?' }]);
-      await vi.runAllTimersAsync();
-      expect(await post).toMatchObject({ state: 'ready' });
-      expect(stored('t/c/node.md')).toEqual(own('Kept?'));
-    });
-
-    it('tree renamed: 404 tree_not_found, nothing written under either id', async () => {
-      const { demo, script, read } = setup({}, [{ picks: 'gate' }]);
-      const post = apiError(demo.api.generateSuggestions('t', 'a/b'));
-      await expect(demo.api.updateTree('t', { title: 'Renamed' })).resolves.toMatchObject({
-        id: 'renamed',
-      });
-      script.calls[0]?.open([{ text: 'Lost?' }]);
-      await vi.runAllTimersAsync();
-      expect(await post).toMatchObject({ status: 404, code: 'tree_not_found' });
-      expect(read('renamed/a/b/node.md')).not.toContain('suggestions:');
-      expect(demo.vfs.exists('t')).toBe(false);
-    });
-
-    it('moved away and back before the result: written', async () => {
-      const { demo, script, stored } = setup({}, [{ picks: 'gate' }]);
-      const post = demo.api.generateSuggestions('t', 'a/b');
-      await demo.api.moveNodes('t', ['a/b'], 'c');
-      await demo.api.moveNodes('t', ['c/b'], 'a');
-      script.calls[0]?.open([{ text: 'Back?' }]);
-      await vi.runAllTimersAsync();
-      expect(await post).toMatchObject({ state: 'ready' });
-      expect(stored('t/a/b/node.md')).toEqual(own('Back?'));
+      parentId: 'plan',
+      question: 'Other?',
+      openSuggestions: ['B', 'C'],
+      attempt: 1,
     });
   });
 
-  it('discards the result when node.md changed meanwhile (502)', async () => {
-    const { demo, script, read } = setup({}, [{ picks: 'gate' }]);
-    const post = apiError(demo.api.generateSuggestions('t', 'a'));
-    const changed = NODE('A?', '2026-01-01T00:01:00.000Z').replace('Answer to A?', 'Changed');
-    demo.vfs.transaction(() => demo.vfs.writeText('t/a/node.md', changed));
-    script.calls[0]?.open([{ text: 'Stale?' }]);
-    await vi.runAllTimersAsync();
-    expect(await post).toMatchObject({ status: 502, code: 'suggestions_failed' });
-    expect(read('t/a/node.md')).toBe(changed);
-  });
-
-  it('keeps a list another writer stored meanwhile (200 with theirs)', async () => {
-    const { demo, script, stored } = setup({}, [{ picks: 'gate' }]);
-    const post = demo.api.generateSuggestions('t', 'a');
-    const theirs = NODE('A?', '2026-01-01T00:01:00.000Z', own('Theirs?'));
-    demo.vfs.transaction(() => demo.vfs.writeText('t/a/node.md', theirs));
-    script.calls[0]?.open([{ text: 'Ours?' }]);
-    await vi.runAllTimersAsync();
-    expect((await post).suggestions).toEqual([{ text: 'Theirs?', target: 'a', up: 0 }]);
-    expect(stored('t/a/node.md')).toEqual(own('Theirs?'));
-  });
-
-  it('a full storage answers 502, rolls back, and the next POST succeeds', async () => {
-    const { demo, script, storage, read } = setup({}, [{ picks: 'gate' }]);
-    const before = read('t/a/node.md');
-    const post = apiError(demo.api.generateSuggestions('t', 'a'));
-    storage.failNextSave();
-    script.calls[0]?.open([{ text: 'Too big?' }]);
-    await vi.runAllTimersAsync();
-    expect(await post).toMatchObject({ status: 502, code: 'suggestions_failed' });
-    expect(read('t/a/node.md')).toBe(before);
-    const retry = demo.api.generateSuggestions('t', 'a');
-    await vi.runAllTimersAsync();
-    expect(await retry).toMatchObject({ state: 'ready' });
-  });
-
-  it('offers the nearest stored ancestor list as candidates, minus asked questions', async () => {
-    const { demo, script, stored } = setup(
-      {
-        't/plan/node.md': NODE('Plan?', at(10), own('A', 'B', 'C')),
-        't/plan/a/node.md': NODE('A', at(11)),
-      },
-      [{ picks: [{ keep: 0 }, { keep: 1 }] }],
-    );
-    const post = demo.api.generateSuggestions('t', 'plan/a');
-    await vi.runAllTimersAsync();
-    expect(script.calls[0]?.input.candidates).toEqual<SuggestionCandidate[]>([
-      { text: 'B', source: 'plan', origin: 0 },
-      { text: 'C', source: 'plan', origin: 0 },
-    ]);
-    expect(stored('t/plan/a/node.md')).toEqual([
-      { text: 'B', up: 1 },
-      { text: 'C', up: 1 },
-    ]);
-    expect((await post).suggestions).toEqual([
-      { text: 'B', target: 'plan', up: 1 },
-      { text: 'C', target: 'plan', up: 1 },
-    ]);
-  });
-
-  it('skips missing ancestors when looking for candidates', async () => {
+  it('a parent without a list offers its nearest stored ancestor list (fallback)', async () => {
     const { demo, script, stored } = setup(
       {
         't/g/node.md': NODE('G?', at(10), own('X', 'Y')),
         't/g/p/node.md': NODE('P?', at(11)),
-        't/g/p/v/node.md': NODE('V?', at(12)),
       },
-      [{ picks: [{ keep: 0 }] }],
+      [['X']],
     );
-    const post = demo.api.generateSuggestions('t', 'g/p/v');
-    await vi.runAllTimersAsync();
-    expect(script.calls[0]?.input.candidates).toEqual([
-      { text: 'X', source: 'g', origin: 0 },
-      { text: 'Y', source: 'g', origin: 0 },
+    await ask(demo, 'g/p', 'Deeper?');
+    expect(script.calls[0]?.openSuggestions).toEqual(['X', 'Y']);
+    expect(stored('t/g/p/deeper/node.md')).toEqual([{ text: 'X', up: 2 }]);
+    expect((await demo.api.getSuggestions('t', 'g/p/deeper')).suggestions).toEqual([
+      { text: 'X', target: 'g', up: 2 },
     ]);
-    expect(stored('t/g/p/v/node.md')).toEqual([{ text: 'X', up: 2 }]);
-    expect(stored('t/g/p/node.md')).toBeUndefined();
-    expect((await post).suggestions).toEqual([{ text: 'X', target: 'g', up: 2 }]);
+  });
+
+  it("does not offer the question's own text", async () => {
+    const { demo, script } = setup({
+      't/plan/node.md': NODE('Plan?', at(10), own('A', 'B', 'C')),
+      't/plan/a/node.md': NODE('A', at(11)),
+    });
+    await ask(demo, 'plan', ' B ');
+    expect(script.calls[0]?.openSuggestions).toEqual(['C']);
+  });
+
+  it('a top-level question gets no open suggestions', async () => {
+    const { demo, script } = setup({ 't/n/node.md': NODE('N?', at(10), own('Next?')) });
+    await ask(demo, '', 'Top?');
+    expect(script.calls[0]?.openSuggestions).toEqual([]);
   });
 });
 
-describe('default simulator', () => {
-  const signal = new AbortController().signal;
-  const candidates: SuggestionCandidate[] = [
-    { text: 'B', source: 'p', origin: 0 },
-    { text: 'C', source: 'p', origin: 0 },
-  ];
-  const input = (user: string, nodeId?: string) => ({
+describe('default block simulator', () => {
+  const input = (question: string, openSuggestions: string[] = ['B', 'C']) => ({
     treeId: 't',
-    ...(nodeId !== undefined && { nodeId }),
-    ancestors: [],
-    current: { user, assistant: 'Lorem ipsum.' },
-    candidates,
-    signal,
+    parentId: 'p',
+    question,
+    openSuggestions,
+    attempt: 1,
   });
   /** Small LCG: deterministic sequences for the determinism check. */
   const seeded = (seed: number) => () => {
@@ -389,50 +244,48 @@ describe('default simulator', () => {
     return seed / 2_147_483_648;
   };
 
-  it('plan-like questions get three steps and keep every candidate', () => {
-    const result = simulateSuggestions(() => 0.5)(input('Make a plan for ownership'));
-    expect(result.picks).toEqual([
-      { text: "Let's start with step 1 of ownership" },
-      { text: "Let's go to step 2 of ownership" },
-      { text: "Let's go to step 3 of ownership" },
-      { keep: 0 },
-      { keep: 1 },
-    ]);
-    expect(result.delayMs).toBe(625);
-  });
-
-  it('asking a step continues the plan instead of starting a new one', () => {
-    const result = simulateSuggestions(() => 0.5)(input("Let's start with step 1 of ownership"));
-    expect(result.picks).toEqual([
-      { text: 'Give me a short exercise on step 1 of ownership' },
-      { text: 'How does step 1 of ownership work under the hood?' },
-      { keep: 0 },
-      { keep: 1 },
+  it('plan-like questions get three steps, then every open suggestion', () => {
+    expect(simulateSuggestionBlock(() => 0.5)(input('Make a plan for ownership'))).toEqual([
+      "Let's start with step 1 of ownership",
+      "Let's go to step 2 of ownership",
+      "Let's go to step 3 of ownership",
+      'B',
+      'C',
     ]);
   });
 
-  it('sometimes returns nothing; fails only at save', () => {
-    expect(simulateSuggestions(() => 0.05)(input('Why?')).picks).toEqual([]);
-    expect(simulateSuggestions(() => 0.05)(input('Why?', 'n')).picks).toEqual([]);
-    expect(simulateSuggestions(() => 0.15)(input('Why?')).picks).toBe('fail');
-    const lazy = simulateSuggestions(() => 0.15)(input('Why?', 'n'));
-    expect(Array.isArray(lazy.picks) && lazy.picks.length).toBeGreaterThan(0);
-    expect(lazy.delayMs).toBe(600 + Math.floor(0.15 * 900));
+  it('a step question keeps exactly the open suggestions; none → no block', () => {
+    const step = "Let's start with step 1 of ownership";
+    expect(simulateSuggestionBlock(() => 0.5)(input(step))).toEqual(['B', 'C']);
+    expect(simulateSuggestionBlock(() => 0.5)(input(step, []))).toBeUndefined();
+  });
+
+  it('often no block, sometimes the marker alone, else templates plus open suggestions', () => {
+    expect(simulateSuggestionBlock(() => 0.1)(input('Why?'))).toBeUndefined();
+    expect(simulateSuggestionBlock(() => 0.45)(input('Why?'))).toEqual([]);
+    expect(simulateSuggestionBlock(() => 0.45)(input('Why?', []))).toBeUndefined();
+    expect(simulateSuggestionBlock(() => 0.5)(input('Why?'))).toEqual([
+      'Give me a short exercise on Why',
+      'How does Why work under the hood?',
+      'B',
+      'C',
+    ]);
   });
 
   it('is deterministic for a given random sequence and topic-cuts the question', () => {
     const question = 'How exactly do lifetimes and borrowing interact in loops?\nMore text';
-    expect(simulateSuggestions(seeded(7))(input(question))).toEqual(
-      simulateSuggestions(seeded(7))(input(question)),
+    expect(simulateSuggestionBlock(seeded(7))(input(question))).toEqual(
+      simulateSuggestionBlock(seeded(7))(input(question)),
     );
-    const result = simulateSuggestions(() => 0.5)(input(question));
-    expect(result.picks).toEqual([
-      { text: 'Give me a short exercise on How exactly do lifetimes and borrowing' },
-      { text: 'How does How exactly do lifetimes and borrowing work under the hood?' },
-      { keep: 0 },
-      { keep: 1 },
+    expect(simulateSuggestionBlock(() => 0.5)(input(question, []))).toEqual([
+      'Give me a short exercise on How exactly do lifetimes and borrowing',
+      'How does How exactly do lifetimes and borrowing work under the hood?',
     ]);
-    const files = simulateSuggestions(() => 0.5)(input('Attached files: a.png'));
-    expect(files.picks).toContainEqual({ text: 'Give me a short exercise on these files' });
+    expect(suggestionTopic(question)).toBe('How exactly do lifetimes and borrowing');
+    expect(suggestionTopic('')).toBe('these files');
+    expect(suggestionTopic('Attached files: a.png')).toBe('these files');
+    expect(simulateSuggestionBlock(() => 0.5)(input('', []))).toContain(
+      'Give me a short exercise on these files',
+    );
   });
 });

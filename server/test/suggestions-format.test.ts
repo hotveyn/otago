@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   finalizeSuggestions,
-  MAX_SUGGESTIONS,
   type NodeFile,
   parseNodeFile,
   parseStoredSuggestions,
@@ -260,19 +259,21 @@ describe('node.md with suggestions', () => {
   });
 });
 
+/** Chain records; a node's question defaults to `q:<id>`. */
 const chainOf = (
-  ...nodes: Array<[string, SuggestionChainNode['suggestions']]>
+  ...nodes: Array<[string, SuggestionChainNode['suggestions'], string?]>
 ): SuggestionChainNode[] =>
-  nodes.map(([id, suggestions]) => (suggestions ? { id, suggestions } : { id }));
+  nodes.map(([id, suggestions, user = `q:${id}`]) =>
+    suggestions ? { id, user, suggestions } : { id, user },
+  );
 
 const noUsed = new Map<string, Set<string>>();
 
 describe('resolveSuggestions', () => {
-  it('missing when the viewed node has no list (ancestors are not consulted)', () => {
-    expect(
-      resolveSuggestions(chainOf(['a', [{ text: 'x', up: 0 }]], ['a/b', undefined]), noUsed),
-    ).toBe('missing');
-    expect(resolveSuggestions([], noUsed)).toBe('missing');
+  it('[] when no node of the chain has a list', () => {
+    expect(resolveSuggestions(chainOf(['a', undefined], ['a/b', undefined]), noUsed)).toEqual([]);
+    expect(resolveSuggestions([], noUsed)).toEqual([]);
+    expect(suggestionTargets(chainOf(['a', undefined]))).toEqual([]);
   });
 
   it('own items target the node; inherited ones the ancestor that owns them', () => {
@@ -308,6 +309,66 @@ describe('resolveSuggestions', () => {
     expect(suggestionTargets(chain)).toEqual(['plan/ch1/deep', 'plan/ch1', 'plan']);
   });
 
+  it('a node without a list uses its nearest stored ancestor, `up` shifted', () => {
+    const chain = chainOf(
+      [
+        'plan',
+        [
+          { text: 'Глава 2', up: 0 },
+          { text: 'Глава 3', up: 0 },
+        ],
+      ],
+      [
+        'plan/ch1',
+        [
+          { text: 'Deeper', up: 0 },
+          { text: 'Глава 3', up: 1 },
+        ],
+      ],
+      ['plan/ch1/legacy', undefined],
+      ['plan/ch1/legacy/more', undefined],
+    );
+    expect(resolveSuggestions(chain, noUsed)).toEqual([
+      { text: 'Deeper', target: 'plan/ch1', up: 2 },
+      { text: 'Глава 3', target: 'plan', up: 3 },
+    ]);
+    expect(suggestionTargets(chain)).toEqual(['plan/ch1', 'plan']);
+    expect(resolveSuggestions(chain.slice(0, 3), noUsed)).toEqual([
+      { text: 'Deeper', target: 'plan/ch1', up: 1 },
+      { text: 'Глава 3', target: 'plan', up: 2 },
+    ]);
+  });
+
+  it('a stored [] stops the fallback', () => {
+    const chain = chainOf(
+      ['plan', [{ text: 'A', up: 0 }]],
+      ['plan/x', []],
+      ['plan/x/y', undefined],
+    );
+    expect(resolveSuggestions(chain, noUsed)).toEqual([]);
+    expect(resolveSuggestions(chain.slice(0, 2), noUsed)).toEqual([]);
+    expect(suggestionTargets(chain)).toEqual([]);
+  });
+
+  it('the fallback drops items asked by a node below the owner', () => {
+    const chain = chainOf(
+      [
+        'plan',
+        [
+          { text: 'Глава 2', up: 0 },
+          { text: 'Глава 3', up: 0 },
+        ],
+      ],
+      ['plan/ch2', undefined, ' Глава 2 '],
+      ['plan/ch2/deep', undefined, 'Something else'],
+    );
+    expect(resolveSuggestions(chain, noUsed)).toEqual([{ text: 'Глава 3', target: 'plan', up: 2 }]);
+    // Its own list is not filtered by its own question.
+    expect(resolveSuggestions(chainOf(['p', [{ text: 'q:p', up: 0 }]]), noUsed)).toEqual([
+      { text: 'q:p', target: 'p', up: 0 },
+    ]);
+  });
+
   it('drops inherited items that no longer resolve', () => {
     const items = [
       { text: 'root', up: 2 },
@@ -335,7 +396,7 @@ describe('resolveSuggestions', () => {
     ).toEqual([{ text: 'kept', target: 'p', up: 1 }]);
   });
 
-  it('own wins over an inherited duplicate; used items are dropped per target; cap', () => {
+  it('own wins over an inherited duplicate; used items are dropped per target', () => {
     const chain = chainOf(
       [
         'p',
@@ -361,13 +422,17 @@ describe('resolveSuggestions', () => {
     ]);
     // "Used" is per target: the same text under another node does not hide it.
     expect(resolveSuggestions(chain, new Map([['p/n', new Set(['used'])]]))).toHaveLength(3);
+  });
+
+  it('is not capped', () => {
     const many = Array.from({ length: 8 }, (_, i) => ({ text: `s${i}`, up: 0 }));
-    expect(resolveSuggestions(chainOf(['n', many]), noUsed)).toHaveLength(MAX_SUGGESTIONS);
+    expect(resolveSuggestions(chainOf(['n', many]), noUsed)).toHaveLength(8);
+    expect(resolveSuggestions(chainOf(['n', many], ['n/m', undefined]), noUsed)).toHaveLength(8);
   });
 });
 
 describe('pickCandidates', () => {
-  it('uses the nearest stored ancestor and skips missing ones', () => {
+  it("is the parent's resolved list (fallback included) with the owner's origin", () => {
     const chain = chainOf(
       [
         'plan',
@@ -389,6 +454,10 @@ describe('pickCandidates', () => {
       { text: 'X1', source: 'plan/x', origin: 1 },
       { text: 'B', source: 'plan', origin: 0 },
     ]);
+    expect(pickCandidates(chain.slice(0, 2), noUsed, new Set())).toEqual([
+      { text: 'X1', source: 'plan/x', origin: 1 },
+      { text: 'B', source: 'plan', origin: 0 },
+    ]);
   });
 
   it('a stored empty list stops inheritance', () => {
@@ -398,7 +467,7 @@ describe('pickCandidates', () => {
     expect(pickCandidates([], noUsed, new Set())).toEqual([]);
   });
 
-  it('excludes used and already asked items', () => {
+  it('excludes used and already asked items; not capped', () => {
     const chain = chainOf([
       'plan',
       [
@@ -410,6 +479,8 @@ describe('pickCandidates', () => {
     expect(
       pickCandidates(chain, new Map([['plan', new Set(['B'])]]), new Set([suggestionKey(' A ')])),
     ).toEqual([{ text: 'C', source: 'plan', origin: 0 }]);
+    const many = Array.from({ length: 8 }, (_, i) => ({ text: `s${i}`, up: 0 }));
+    expect(pickCandidates(chainOf(['n', many]), noUsed, new Set())).toHaveLength(8);
   });
 });
 
@@ -419,69 +490,58 @@ describe('finalizeSuggestions', () => {
     { text: 'Глава 3', source: 'plan', origin: 0 },
     { text: 'Deeper', source: 'plan/ch1', origin: 1 },
   ];
+  const none = new Set<string>();
 
-  it('maps keeps to `up` relative to the new node, text verbatim', () => {
+  it('a text equal to a candidate is a keep: `up` relative to the new node, text verbatim', () => {
     expect(
-      finalizeSuggestions([{ keep: 0 }, { keep: 2 }], candidates, {
-        depth: 2,
-        askedKeys: new Set(),
-      }),
+      finalizeSuggestions(['Глава 2', 'Deeper'], candidates, { depth: 2, askedKeys: none }),
     ).toEqual([
       { text: 'Глава 2', up: 2 },
       { text: 'Deeper', up: 1 },
     ]);
-  });
-
-  it('turns a new text equal to a candidate into a keep', () => {
-    expect(
-      finalizeSuggestions([{ text: ' "Глава 3" ' }], candidates, {
-        depth: 1,
-        askedKeys: new Set(),
-      }),
-    ).toEqual([{ text: 'Глава 3', up: 1 }]);
-  });
-
-  it('drops bad picks, asked questions and duplicates; own first; cap', () => {
-    const picks = [
-      { keep: 0 },
-      { keep: 7 },
-      { keep: -1 },
-      { keep: 0.5 },
-      { text: '   ' },
-      { text: 'asked' },
-      { text: 'new 1' },
-      { text: 'new 1' },
-      { text: 'new\n2' },
-      {} as never,
-      { text: 'new 3' },
-      { text: 'new 4' },
-      { text: 'new 5' },
-      { text: 'new 6' },
-    ];
-    expect(
-      finalizeSuggestions(picks, candidates, { depth: 1, askedKeys: new Set(['asked']) }),
-    ).toEqual([
-      { text: 'new 1', up: 0 },
-      { text: 'new 2', up: 0 },
-      { text: 'new 3', up: 0 },
-      { text: 'new 4', up: 0 },
-      { text: 'new 5', up: 0 },
-    ]);
-    expect(
-      finalizeSuggestions([{ keep: 1 }, { text: 'own' }], candidates, {
-        depth: 1,
-        askedKeys: new Set(),
-      }),
-    ).toEqual([
-      { text: 'own', up: 0 },
+    // NFC / trim / wrapping quotes equal.
+    const nfd = 'Глава 3'.normalize('NFD');
+    expect(finalizeSuggestions([` "${nfd}" `], candidates, { depth: 1, askedKeys: none })).toEqual([
       { text: 'Глава 3', up: 1 },
     ]);
   });
 
-  it('everything dropped → [] (stored, empty)', () => {
-    expect(finalizeSuggestions([], [], { depth: 0, askedKeys: new Set() })).toEqual([]);
+  it('an edited copy of a candidate is a new own item', () => {
     expect(
-      finalizeSuggestions([{ keep: 0 }], candidates, {
+      finalizeSuggestions(['Глава 2, please'], candidates, { depth: 1, askedKeys: none }),
+    ).toEqual([{ text: 'Глава 2, please', up: 0 }]);
+  });
+
+  it('drops empty texts, asked questions and duplicates; own first; no cap', () => {
+    const texts = [
+      'Глава 2',
+      '',
+      '   ',
+      'asked',
+      'new 1',
+      ' new 1 ',
+      'new\n2',
+      'Глава 2',
+      ...Array.from({ length: 8 }, (_, i) => `more ${i}`),
+    ];
+    expect(
+      finalizeSuggestions(texts, candidates, { depth: 1, askedKeys: new Set(['asked']) }),
+    ).toEqual([
+      { text: 'new 1', up: 0 },
+      { text: 'new 2', up: 0 },
+      ...Array.from({ length: 8 }, (_, i) => ({ text: `more ${i}`, up: 0 })),
+      { text: 'Глава 2', up: 1 },
+    ]);
+  });
+
+  it('a keep that would point at the node itself is dropped (defensive)', () => {
+    expect(finalizeSuggestions(['Deeper'], candidates, { depth: 1, askedKeys: none })).toEqual([]);
+  });
+
+  it('everything dropped → [] (stored, empty)', () => {
+    expect(finalizeSuggestions([], [], { depth: 0, askedKeys: none })).toEqual([]);
+    expect(
+      finalizeSuggestions(['Глава 2', ''], candidates, {
         depth: 1,
         askedKeys: new Set(['Глава 2']),
       }),

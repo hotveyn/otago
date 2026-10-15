@@ -1,6 +1,6 @@
 /**
  * Suggested follow-up questions of a saved node (contract
- * `.claude/features/suggested-prompts/contracts/`): the client-side visibility rules on top
+ * `.claude/features/inline-suggestions/contracts/`): the client-side visibility rules on top
  * of the server's resolved list, and the click. Pure, no React.
  */
 import type { QuestionContext, Suggestion } from '../api/types';
@@ -9,8 +9,6 @@ import type { QuestionsState } from './questions';
 import { truncateGraphemes } from './text';
 import { isSameOrDescendant, nameOf } from './tree';
 
-/** At most this many buttons per panel (the server stores no more either). */
-export const MAX_SUGGESTIONS = 5;
 /** Button label cap; the full text goes in the tooltip and is what gets sent. */
 export const SUGGESTION_LABEL_GRAPHEMES = 120;
 
@@ -53,8 +51,9 @@ export function inFlightSuggestionKeys(
  *  2. side panel (`anchor !== null`): drop items whose target lies above the anchor (a send
  *     there would break the aside's context);
  *  3. dedupe by key: an own item (`up === 0`) beats an inherited one wherever it appears,
- *     otherwise the first one wins; the server's order (own first) is kept;
- *  4. cap at `MAX_SUGGESTIONS`.
+ *     otherwise the first one wins; the server's order (own first) is kept.
+ * No cap: every remaining item is shown. A list that came through the server's ancestor
+ * fallback (all items `up > 0`) goes through the same steps.
  */
 export function visibleSuggestions(
   list: readonly Suggestion[],
@@ -78,7 +77,6 @@ export function visibleSuggestions(
     if (seen.has(key) || (item.up !== 0 && ownKeys.has(key))) continue;
     seen.add(key);
     result.push(item);
-    if (result.length === MAX_SUGGESTIONS) break;
   }
   return result;
 }

@@ -1,0 +1,39 @@
+{
+  "slug": "inline-suggestions",
+  "title": "Inline suggestions: the answering agent predicts the next question",
+  "created": "2026-10-15T13:17:01Z",
+  "workspace_root": "/Users/ioannshestopalov/Programming/otago/.claude/worktrees/suggest-thinking",
+  "contracts": {
+    "owner": "server",
+    "generated": true,
+    "path": ".claude/features/archive/15-10-2026/inline-suggestions/contracts"
+  },
+  "projects": [
+    {
+      "name": "server",
+      "root": "server",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "server",
+      "stage": "implemented"
+    },
+    {
+      "name": "web",
+      "root": "web",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "client",
+      "stage": "implemented"
+    },
+    {
+      "name": "demo",
+      "root": "demo",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "client",
+      "stage": "implemented"
+    }
+  ],
+  "archived": "2026-10-15T16:05:15Z",
+  "archived_to": ".claude/features/archive/15-10-2026/inline-suggestions"
+}

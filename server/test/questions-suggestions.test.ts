@@ -1,215 +1,398 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import type { SuggestInput } from '../src/agent/index.js';
-import { parseNodeFile } from '../src/storage/index.js';
+import { afterEach, describe, expect, it, type Mock, vi } from 'vitest';
+import type { AgentEvent, AskInput, NameInput } from '../src/agent/index.js';
+import { fallbackNodeName } from '../src/agent/index.js';
+import type { QuestionLogger, QuestionTimings } from '../src/questions/index.js';
+import {
+  parseNodeFile,
+  type StoredSuggestion,
+  SUGGESTIONS_MARKER,
+  serializeNodeFile,
+  suggestionBlock,
+} from '../src/storage/index.js';
 import {
   askAndSettle,
   deferred,
-  eventKinds,
   expectDone,
-  type FakeAgentOptions,
-  fakeAgent,
+  expectFailed,
+  type FakeAgent,
   makeApp,
   multipartMessage,
+  openEventStream,
   postQuestion,
+  raceAbort,
+  settle,
   TEST_MODELS,
   type TestContext,
-  tick,
   waitFor,
 } from './helpers.js';
 
-describe('suggestions generated at save', () => {
+const M = SUGGESTIONS_MARKER;
+
+interface ScriptOptions {
+  /** Chunks of call `call` (0-based) for `input`. */
+  chunks: (input: AskInput, call: number) => string[];
+  /** Awaited before chunk `index` of call `call` when it returns a promise (raced with abort). */
+  gate?: (index: number, call: number) => Promise<void> | undefined;
+  /** Throws before chunk `index` of call `call` when it returns true. */
+  failAt?: (index: number, call: number) => boolean;
+}
+
+/** Agent with scripted chunks per call; nodes are named after their question. */
+function scriptedAgent(options: ScriptOptions): FakeAgent {
+  const calls: AskInput[] = [];
+  const nameCalls: NameInput[] = [];
+  return {
+    calls,
+    nameCalls,
+    async *ask(input): AsyncGenerator<AgentEvent> {
+      const call = calls.length;
+      calls.push(input);
+      const chunks = options.chunks(input, call);
+      let text = '';
+      for (const [index, chunk] of chunks.entries()) {
+        if (options.failAt?.(index, call)) throw new Error('Agent exploded');
+        const gate = options.gate?.(index, call);
+        if (gate) await raceAbort(gate, input.signal);
+        if (input.signal.aborted) throw new Error('Aborted');
+        text += chunk;
+        yield { type: 'chunk', text: chunk };
+      }
+      if (options.failAt?.(chunks.length, call)) throw new Error('Agent exploded');
+      yield { type: 'done', text: text.trim(), model: input.model };
+    },
+    async name(input) {
+      nameCalls.push(input);
+      return fallbackNodeName(input.question);
+    },
+  };
+}
+
+/** The same chunks for every call. */
+const always = (...chunks: string[]) => scriptedAgent({ chunks: () => chunks });
+
+describe('suggestion blocks of answers', () => {
   let ctx: TestContext;
+  let warn: Mock<QuestionLogger['warn']>;
   afterEach(() => ctx.close());
 
   const treeDir = () => path.join(ctx.treesDir, 'rust');
-  const readNode = async (id: string) =>
-    parseNodeFile(await readFile(path.join(treeDir(), ...id.split('/'), 'node.md'), 'utf8'));
-  const getSuggestions = (node: string) =>
-    ctx.app.inject({
+  const nodeFile = (id: string) => path.join(treeDir(), ...id.split('/'), 'node.md');
+  const readNode = async (id: string) => parseNodeFile(await readFile(nodeFile(id), 'utf8'));
+  const treeEntries = async () => (await readdir(treeDir())).sort();
+  const getSuggestions = async (node: string) => {
+    const res = await ctx.app.inject({
       method: 'GET',
       url: `/api/trees/rust/suggestions?node=${encodeURIComponent(node)}`,
     });
+    expect(res.statusCode).toBe(200);
+    return res.json().suggestions;
+  };
+  let clock = 0;
 
-  async function setup(options: FakeAgentOptions = {}) {
-    const agent = fakeAgent(options);
-    ctx = await makeApp(agent, TEST_MODELS);
+  async function setup(agent: FakeAgent, timings?: Partial<QuestionTimings>) {
+    warn = vi.fn<QuestionLogger['warn']>();
+    ctx = await makeApp(agent, TEST_MODELS, { timings, log: { warn, error: vi.fn() } });
     await ctx.app.inject({ method: 'POST', url: '/api/trees', payload: { title: 'Rust' } });
     return agent;
   }
 
-  /** POST and wait for the question only (not for suggestion generations). */
-  async function askOnly(body: object) {
-    const res = await postQuestion(ctx, body);
-    expect(res.statusCode).toBe(202);
-    const id = res.json().question.id as string;
-    return { id, question: expectDone(await ctx.questions.settled(id)) };
+  /** Hand-written node (no question flow). `suggestions` undefined = no own list. */
+  async function writeNode(id: string, user: string, suggestions?: StoredSuggestion[]) {
+    const dir = path.join(treeDir(), ...id.split('/'));
+    await mkdir(dir, { recursive: true });
+    clock++;
+    await writeFile(
+      path.join(dir, 'node.md'),
+      serializeNodeFile({
+        created: new Date(Date.UTC(2026, 9, 15, 10, 0, clock)).toISOString(),
+        model: 'm',
+        user,
+        assistant: `answer to ${user}`,
+        ...(suggestions ? { suggestions } : {}),
+      }),
+    );
   }
 
-  it('stores the list with the node when it is ready before naming (single write)', async () => {
-    const returned = deferred();
-    const agent = await setup({
-      suggest: () => {
-        returned.open();
-        return [{ text: 'What next?' }];
-      },
-      nameGate: async () => {
-        await returned.promise;
-        await tick(20);
-      },
-    });
-    const { question } = await askOnly({ parentId: '', text: 'Q' });
-    // Read before any background write could happen.
-    expect((await readNode(question.nodeId)).suggestions).toEqual([{ text: 'What next?', up: 0 }]);
-    expect(agent.suggestCalls).toHaveLength(1);
-    expect(agent.suggestCalls[0]).toMatchObject({
-      ancestors: [],
-      current: { user: 'Q', assistant: 'Hello, world' },
-      candidates: [],
-      model: TEST_MODELS.suggest,
-    });
-    expect(agent.suggestCalls[0]?.current.id).toBeUndefined();
-  });
+  /** Chunk events of `id` have contiguous offsets per attempt. */
+  function expectContiguous(id: string) {
+    const next = new Map<number, number>();
+    for (const event of ctx.events.forQuestion(id)) {
+      if (event.event !== 'chunk') continue;
+      const { attempt, offset, text } = event.data;
+      expect(offset).toBe(next.get(attempt) ?? 0);
+      next.set(attempt, offset + text.length);
+    }
+  }
 
-  it('commits without waiting; a slower generation is written later and joined by POST', async () => {
-    const gate = deferred();
-    const agent = await setup({ suggest: [{ text: 'Later' }], suggestGate: () => gate.promise });
-    const { question } = await askOnly({ parentId: '', text: 'Q' });
-    expect(agent.suggestCalls).toHaveLength(1);
-    expect((await readNode(question.nodeId)).suggestions).toBeUndefined();
-    expect((await getSuggestions(question.nodeId)).json().state).toBe('missing');
-
-    const joined = ctx.app.inject({
-      method: 'POST',
-      url: '/api/trees/rust/suggestions',
-      payload: { node: question.nodeId },
-    });
-    await tick(20);
-    gate.open();
-    const res = await joined;
-    expect(res.statusCode).toBe(200);
-    expect(res.json().suggestions).toEqual([{ text: 'Later', target: question.nodeId, up: 0 }]);
-    expect(agent.suggestCalls).toHaveLength(1);
-    expect((await readNode(question.nodeId)).suggestions).toEqual([{ text: 'Later', up: 0 }]);
-  });
-
-  it('an adopted generation writes even when nobody asks for it', async () => {
-    const gate = deferred();
-    await setup({ suggest: [{ text: 'Later' }], suggestGate: () => gate.promise });
-    const { question } = await askOnly({ parentId: '', text: 'Q' });
-    gate.open();
-    await waitFor(async () => (await readNode(question.nodeId)).suggestions !== undefined);
-    expect((await readNode(question.nodeId)).suggestions).toEqual([{ text: 'Later', up: 0 }]);
-  });
-
-  it('a failed generation never fails the question; the node stays missing', async () => {
-    const agent = await setup({ suggestError: 'model down' });
-    const { question, events } = await askAndSettle(ctx, { parentId: '', text: 'Q' });
+  it('strips the block from the saved answer, the chunks and the naming input', async () => {
+    const agent = await setup(always('Answer text.', suggestionBlock(['What next?'])));
+    const { question, started } = await askAndSettle(ctx, { parentId: '', text: 'Q' });
     const done = expectDone(question);
-    expect(eventKinds(events)).toEqual([
-      'question:streaming',
-      'chunk',
-      'chunk',
-      'question:naming',
-      'question:done',
-    ]);
-    expect(agent.suggestCalls).toHaveLength(1);
-    expect((await readNode(done.nodeId)).suggestions).toBeUndefined();
+    const node = await readNode(done.nodeId);
+    expect(node.assistant).toBe('Answer text.');
+    expect(node.suggestions).toEqual([{ text: 'What next?', up: 0 }]);
+    expect(agent.nameCalls[0]?.answer).toBe('Answer text.');
+    // The stream ends right before the marker line (display only; the node has the trimmed text).
+    expect(ctx.events.text(started.id)).toBe('Answer text.\n\n');
+    expectContiguous(started.id);
+    expect(warn).not.toHaveBeenCalled();
   });
 
-  it('cancel during naming aborts the generation; nothing is written', async () => {
-    let suggestSignal: AbortSignal | undefined;
-    const agent = await setup({
-      nameGate: () => new Promise(() => undefined),
-      suggestGate: (input: SuggestInput) => {
-        suggestSignal = input.signal;
-        return new Promise(() => undefined);
-      },
-    });
+  it('never sends a marker split across chunks', async () => {
+    const full = `Answer.${suggestionBlock(['a', 'b'])}`;
+    const offsets = [8, 9, 10, 11, 14, 20, 30, 35, 36, full.length - 2];
+    let split = 0;
+    await setup(
+      scriptedAgent({
+        chunks: () => {
+          const at = offsets[split++] ?? 0;
+          return [full.slice(0, at), full.slice(at)];
+        },
+      }),
+    );
+    for (const [index] of offsets.entries()) {
+      const { question, started } = await askAndSettle(ctx, { parentId: '', text: `Q ${index}` });
+      const done = expectDone(question);
+      expect(ctx.events.text(started.id)).toBe('Answer.\n\n');
+      expect((await readNode(done.nodeId)).suggestions).toEqual([
+        { text: 'a', up: 0 },
+        { text: 'b', up: 0 },
+      ]);
+    }
+  });
+
+  it('snapshots taken during the block never contain it; offsets stay contiguous', async () => {
+    const gate = deferred();
+    await setup(
+      scriptedAgent({
+        chunks: () => ['Answer.', `\n\n${M}\n`, '- Next\n', 'More prose.'],
+        gate: (index) => (index === 2 ? gate.promise : undefined),
+      }),
+    );
+    await ctx.app.listen({ host: '127.0.0.1', port: 0 });
+    const baseUrl = `http://127.0.0.1:${(ctx.app.server.address() as AddressInfo).port}`;
     const res = await postQuestion(ctx, { parentId: '', text: 'Q' });
     const id = res.json().question.id as string;
-    await waitFor(() => agent.suggestCalls.length === 1 && agent.nameCalls.length === 1);
-    const del = await ctx.app.inject({ method: 'DELETE', url: `/api/questions/${id}` });
-    expect(del.statusCode).toBe(204);
-    expect(suggestSignal?.aborted).toBe(true);
-    await ctx.suggestions.idle();
-    expect((await readdir(treeDir())).sort()).toEqual(['tree.md']);
+    await waitFor(() => ctx.events.forQuestion(id).filter((e) => e.event === 'chunk').length > 0);
+    // The marker chunk went through the filter (and was held).
+    await waitFor(() => ctx.questions.detail(id)?.live?.answer === 'Answer.\n\n');
+    const subscription = ctx.questions.subscribe({ onEvent: () => {}, onEnd: () => {} });
+    const entry = subscription.snapshot.questions.find((question) => question.id === id);
+    subscription.unsubscribe();
+    expect(entry?.live?.answer).toBe('Answer.\n\n');
+    const stream = await openEventStream(baseUrl);
+    const snapshot = await stream.next((frame) => frame.event === 'snapshot');
+    expect(JSON.stringify(snapshot.data)).not.toContain('otago:suggestions');
+    stream.close();
+
+    gate.open();
+    const done = expectDone(await ctx.questions.settled(id));
+    // The block was broken by prose: everything is released, in order.
+    expect(ctx.events.text(id)).toBe(`Answer.\n\n${M}\n- Next\nMore prose.`);
+    expectContiguous(id);
+    const node = await readNode(done.nodeId);
+    expect(node.assistant).toBe(`Answer.\n\n${M}\n- Next\nMore prose.`);
+    expect(node.suggestions).toBeUndefined();
   });
 
-  it('inherits from the parent end to end and hides used suggestions', async () => {
-    const agent = await setup({
-      suggest: (input) => {
-        if (input.current.user === 'plan') {
-          return [{ text: 'Глава 1' }, { text: 'Глава 2' }, { text: 'Глава 3' }];
-        }
-        if (input.current.user === 'Глава 1') return [{ keep: 0 }, { keep: 1 }];
-        return [];
-      },
-    });
-    const plan = expectDone((await askAndSettle(ctx, { parentId: '', text: 'plan' })).question);
-    expect((await readNode(plan.nodeId)).suggestions).toEqual([
-      { text: 'Глава 1', up: 0 },
+  it('no block: no key, and the new node shows the parent list with up 1', async () => {
+    await setup(always('Plain answer.'));
+    await writeNode('plan', 'Plan?', [{ text: 'Глава 2', up: 0 }]);
+    const done = expectDone(
+      (await askAndSettle(ctx, { parentId: 'plan', text: 'Term?' })).question,
+    );
+    const raw = await readFile(nodeFile(done.nodeId), 'utf8');
+    expect(raw).not.toContain('suggestions');
+    expect(await getSuggestions(done.nodeId)).toEqual([{ text: 'Глава 2', target: 'plan', up: 1 }]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('an empty block stores [] and stops inheritance', async () => {
+    await setup(always('Answer.', suggestionBlock([])));
+    await writeNode('plan', 'Plan?', [{ text: 'Глава 2', up: 0 }]);
+    const done = expectDone(
+      (await askAndSettle(ctx, { parentId: 'plan', text: 'Term?' })).question,
+    );
+    expect((await readNode(done.nodeId)).suggestions).toEqual([]);
+    expect(await getSuggestions(done.nodeId)).toEqual([]);
+  });
+
+  it('a rejected marker stays in the answer, stores no key and logs one warning', async () => {
+    const text = `Answer\n${M}\n- x\nMore prose.`;
+    await setup(always(text));
+    const done = expectDone((await askAndSettle(ctx, { parentId: '', text: 'Q' })).question);
+    const node = await readNode(done.nodeId);
+    expect(node.assistant).toBe(text);
+    expect(node.suggestions).toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('a marker inside a fence is plain answer text (no key, no warning)', async () => {
+    const text = `Example:\n\n\`\`\`md\n${M}\n- x\n\`\`\``;
+    await setup(always(text));
+    const { question, started } = await askAndSettle(ctx, { parentId: '', text: 'Q' });
+    const node = await readNode(expectDone(question).nodeId);
+    expect(node.assistant).toBe(text);
+    expect(node.suggestions).toBeUndefined();
+    expect(ctx.events.text(started.id)).toBe(text);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("offers the parent's open suggestions to the agent", async () => {
+    const agent = await setup(always('Answer.'));
+    await writeNode('plan', 'Plan?', [
+      { text: 'A', up: 0 },
+      { text: 'B', up: 0 },
+      { text: 'C', up: 0 },
+    ]);
+    await writeNode('plan/b', 'B');
+    await askAndSettle(ctx, { parentId: 'plan', text: 'Side' });
+    expect(agent.calls[0]?.openSuggestions).toEqual(['A', 'C']);
+
+    // A legacy parent without a list passes the grandparent's list.
+    await writeNode('g', 'G?', [{ text: 'X', up: 0 }]);
+    await writeNode('g/p', 'P?');
+    await askAndSettle(ctx, { parentId: 'g/p', text: 'Child' });
+    expect(agent.calls[1]?.openSuggestions).toEqual(['X']);
+
+    await askAndSettle(ctx, { parentId: '', text: 'Top' });
+    expect(agent.calls[2]?.openSuggestions).toEqual([]);
+  });
+
+  it('a copied candidate is stored as a keep pointing at its owner (two levels too)', async () => {
+    await setup(always('Answer.', suggestionBlock(['Глава 2'])));
+    await writeNode('plan', 'Plan?', [{ text: 'Глава 2', up: 0 }]);
+    const child = expectDone(
+      (await askAndSettle(ctx, { parentId: 'plan', text: 'Term?' })).question,
+    );
+    expect((await readNode(child.nodeId)).suggestions).toEqual([{ text: 'Глава 2', up: 1 }]);
+    expect(await getSuggestions(child.nodeId)).toEqual([
+      { text: 'Глава 2', target: 'plan', up: 1 },
+    ]);
+
+    const grandchild = expectDone(
+      (await askAndSettle(ctx, { parentId: child.nodeId, text: 'Deeper?' })).question,
+    );
+    expect((await readNode(grandchild.nodeId)).suggestions).toEqual([{ text: 'Глава 2', up: 2 }]);
+    expect(await getSuggestions(grandchild.nodeId)).toEqual([
+      { text: 'Глава 2', target: 'plan', up: 2 },
+    ]);
+  });
+
+  it('an item asked by hand is no longer offered and is hidden', async () => {
+    const agent = await setup(always('Answer.'));
+    await writeNode('plan', 'Plan?', [
       { text: 'Глава 2', up: 0 },
       { text: 'Глава 3', up: 0 },
     ]);
-
-    const first = expectDone(
-      (await askAndSettle(ctx, { parentId: plan.nodeId, text: 'Глава 1' })).question,
-    );
-    expect(agent.suggestCalls[1]?.candidates).toEqual([
-      { text: 'Глава 2', source: plan.nodeId, origin: 0 },
-      { text: 'Глава 3', source: plan.nodeId, origin: 0 },
-    ]);
-    expect(agent.suggestCalls[1]?.ancestors).toEqual([
-      { id: plan.nodeId, user: 'plan', assistant: 'Hello, world' },
-    ]);
-    expect((await readNode(first.nodeId)).suggestions).toEqual([
-      { text: 'Глава 2', up: 1 },
-      { text: 'Глава 3', up: 1 },
-    ]);
-    expect((await getSuggestions(first.nodeId)).json().suggestions).toEqual([
-      { text: 'Глава 2', target: plan.nodeId, up: 1 },
-      { text: 'Глава 3', target: plan.nodeId, up: 1 },
-    ]);
-    // Under the plan, `Глава 1` is used now.
-    expect((await getSuggestions(plan.nodeId)).json().suggestions).toEqual([
-      { text: 'Глава 2', target: plan.nodeId, up: 0 },
-      { text: 'Глава 3', target: plan.nodeId, up: 0 },
-    ]);
-
-    // Clicking the inherited `Глава 2` asks it from the plan: a sibling of `Глава 1`.
-    await askAndSettle(ctx, { parentId: plan.nodeId, text: 'Глава 2' });
-    expect((await getSuggestions(first.nodeId)).json().suggestions).toEqual([
-      { text: 'Глава 3', target: plan.nodeId, up: 1 },
-    ]);
-    // The sibling is offered what is left of the plan's list (asked and used items removed).
-    expect(agent.suggestCalls[2]?.candidates).toEqual([
-      { text: 'Глава 3', source: plan.nodeId, origin: 0 },
-    ]);
+    await askAndSettle(ctx, { parentId: 'plan', text: 'Глава 2' });
+    expect(agent.calls[0]?.openSuggestions).toEqual(['Глава 3']);
+    await askAndSettle(ctx, { parentId: 'plan', text: 'Other' });
+    expect(agent.calls[1]?.openSuggestions).toEqual(['Глава 3']);
+    expect(await getSuggestions('plan')).toEqual([{ text: 'Глава 3', target: 'plan', up: 0 }]);
   });
 
-  it('a files-only message is the naming question for suggestions', async () => {
-    const agent = await setup();
+  it('finalizes the block: asked, duplicate and empty items dropped, edits own, no cap', async () => {
+    const many = Array.from({ length: 10 }, (_, i) => `Item ${i}`);
+    await setup(
+      always(
+        'Answer.',
+        suggestionBlock(['Ask me', 'Глава 2', 'Глава 2, but shorter', ...many, ' Item 1 ', '']),
+      ),
+    );
+    await writeNode('plan', 'Plan?', [{ text: 'Глава 2', up: 0 }]);
+    const done = expectDone(
+      (await askAndSettle(ctx, { parentId: 'plan', text: 'Ask me' })).question,
+    );
+    expect((await readNode(done.nodeId)).suggestions).toEqual([
+      { text: 'Глава 2, but shorter', up: 0 },
+      ...many.map((text) => ({ text, up: 0 })),
+      { text: 'Глава 2', up: 1 },
+    ]);
+    expect(await getSuggestions(done.nodeId)).toHaveLength(12);
+  });
+
+  it('cancel during the block: no node, no block in any chunk', async () => {
+    const gate = deferred();
+    await setup(
+      scriptedAgent({
+        chunks: () => ['Answer.', `\n\n${M}\n`, '- Next'],
+        gate: (index) => (index === 2 ? gate.promise : undefined),
+      }),
+    );
+    const res = await postQuestion(ctx, { parentId: '', text: 'Q' });
+    const id = res.json().question.id as string;
+    await waitFor(() => ctx.questions.detail(id)?.live?.answer === 'Answer.\n\n');
+    await ctx.app.inject({ method: 'DELETE', url: `/api/questions/${id}` });
+    expect(await ctx.questions.settled(id)).toBeUndefined();
+    expect(ctx.events.text(id)).toBe('Answer.\n\n');
+    expect(await treeEntries()).toEqual(['tree.md']);
+  });
+
+  it('a failure inside the block keeps it out of live text; the retry stores its own block', async () => {
+    const agent = await setup(
+      scriptedAgent({
+        chunks: (_input, call) =>
+          call === 0
+            ? ['Answer 1.', `\n\n${M}\n`, '- First', '\n- More']
+            : ['Answer 2.', suggestionBlock(['Second'])],
+        failAt: (index, call) => call === 0 && index === 3,
+      }),
+    );
+    const first = await askAndSettle(ctx, { parentId: '', text: 'Q' });
+    const failed = expectFailed(first.question);
+    expect(failed.error.code).toBe('agent_error');
+    expect(ctx.questions.detail(failed.id)?.live?.answer).toBe('Answer 1.\n\n');
+
+    const res = await ctx.app.inject({ method: 'POST', url: `/api/questions/${failed.id}/retry` });
+    expect(res.statusCode).toBe(202);
+    const done = expectDone(await ctx.questions.settled(failed.id));
+    expect(agent.calls).toHaveLength(2);
+    const node = await readNode(done.nodeId);
+    expect(node.assistant).toBe('Answer 2.');
+    expect(node.suggestions).toEqual([{ text: 'Second', up: 0 }]);
+    expect(ctx.events.text(failed.id)).not.toContain('<!--');
+  });
+
+  it('an attempt timeout mid-block fails with timeout and leaks no block', async () => {
+    await setup(
+      scriptedAgent({
+        chunks: () => ['Answer.', `\n\n${M}\n`, '- Next'],
+        gate: (index) => (index === 2 ? new Promise(() => {}) : undefined),
+      }),
+      { attemptTimeoutMs: 50 },
+    );
+    const { question, started } = await askAndSettle(ctx, { parentId: '', text: 'Q' });
+    expect(expectFailed(question).error.code).toBe('timeout');
+    expect(ctx.events.text(started.id)).not.toContain('<!--');
+    expect(ctx.questions.detail(started.id)?.live?.answer).toBe('Answer.\n\n');
+    expect(await treeEntries()).toEqual(['tree.md']);
+  });
+
+  it('an answer that is only a block fails as an empty answer', async () => {
+    await setup(always(`${M}\n- x`));
+    const { question } = await askAndSettle(ctx, { parentId: '', text: 'Q' });
+    const failed = expectFailed(question);
+    expect(failed.error).toMatchObject({
+      code: 'agent_error',
+      message: 'Agent returned an empty answer',
+    });
+    expect(await treeEntries()).toEqual(['tree.md']);
+  });
+
+  it('a files-only message with a block stores the items', async () => {
+    await setup(always('Answer.', suggestionBlock(['Next'])));
     const res = await ctx.app.inject({
       method: 'POST',
       url: '/api/trees/rust/questions',
-      ...multipartMessage({ parentId: '' }, [{ name: 'notes.md', content: '# Notes' }]),
+      ...multipartMessage({ parentId: '', text: '' }, [{ name: 'notes.md', content: 'abc' }]),
     });
-    expect(res.statusCode).toBe(202);
-    expectDone(await ctx.questions.settled(res.json().question.id));
-    await ctx.suggestions.idle();
-    expect(agent.suggestCalls[0]?.current.user).toBe('Attached files: notes.md');
-    expect(agent.suggestCalls[0]?.model).toBe(TEST_MODELS.suggest);
-  });
-
-  it('new nodes get a stored empty list from the default fake', async () => {
-    await setup();
-    const { question } = await askAndSettle(ctx, { parentId: '', text: 'Q' });
-    expect((await readNode(expectDone(question).nodeId)).suggestions).toEqual([]);
-    expect((await getSuggestions(expectDone(question).nodeId)).json()).toMatchObject({
-      state: 'ready',
-      suggestions: [],
-    });
+    const done = expectDone((await settle(ctx, res)).question);
+    const node = await readNode(done.nodeId);
+    expect(node.user).toBe('');
+    expect(node.suggestions).toEqual([{ text: 'Next', up: 0 }]);
   });
 });

@@ -18,8 +18,6 @@ import type {
   SourceInfo,
   StartQuestionPayload,
   StartQuestionResponse,
-  SuggestionErrorCode,
-  SuggestionsReady,
   SuggestionsResponse,
   TreeDetail,
   TreeMeta,
@@ -30,10 +28,7 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
-    /**
-     * Set for 409 conflicts, 404 reasons, upload rejections, question errors and failed
-     * suggestion generations (if sent).
-     */
+    /** Set for 409 conflicts, 404 reasons, upload rejections and question errors (if sent). */
     readonly code?: ApiErrorCode,
     /** `details` of the error body, for every status (e.g. `TreeBusyDetails` on a 409). */
     readonly details?: unknown,
@@ -43,12 +38,7 @@ export class ApiError extends Error {
   }
 }
 
-export type ApiErrorCode =
-  | ConflictCode
-  | MessageUploadErrorCode
-  | NotFoundCode
-  | QuestionErrorCode
-  | SuggestionErrorCode;
+export type ApiErrorCode = ConflictCode | MessageUploadErrorCode | NotFoundCode | QuestionErrorCode;
 
 const CONFLICT_CODES: readonly string[] = [
   'tree_busy_streaming',
@@ -78,17 +68,12 @@ const QUESTION_ERROR_CODES: readonly string[] = [
   'question_not_failed',
 ] satisfies QuestionErrorCode[];
 
-const SUGGESTION_ERROR_CODES: readonly string[] = [
-  'suggestions_failed',
-] satisfies SuggestionErrorCode[];
-
 const isErrorCode = (value: unknown): value is ApiErrorCode =>
   typeof value === 'string' &&
   (CONFLICT_CODES.includes(value) ||
     UPLOAD_ERROR_CODES.includes(value) ||
     NOT_FOUND_CODES.includes(value) ||
-    QUESTION_ERROR_CODES.includes(value) ||
-    SUGGESTION_ERROR_CODES.includes(value));
+    QUESTION_ERROR_CODES.includes(value));
 
 /** True for an `ApiError` with this status (and code, when given). */
 export const isApiError = (error: unknown, status: number, code?: ApiErrorCode): boolean =>
@@ -219,15 +204,9 @@ export const api = {
 
   getModels: () => request<ModelsInfo>('/models'),
 
-  /** Pure read. `state: 'missing'` = `node.md` has no stored list yet. */
+  /** Pure read; always `state: 'ready'` (the server resolves the ancestor fallback). */
   getSuggestions: (id: string, node: string) =>
     request<SuggestionsResponse>(`${tree(id)}/suggestions?node=${encodeURIComponent(node)}`),
-  /**
-   * Lazy generation: idempotent and deduped per node on the server; may take up to ~30 s.
-   * 404 `node_not_found` when the node moved meanwhile, 502 `suggestions_failed` on failure.
-   */
-  generateSuggestions: (id: string, node: string) =>
-    request<SuggestionsReady>(`${tree(id)}/suggestions`, json('POST', { node })),
 
   /**
    * Start a question (202). Resolves once the server registered it (files validated and

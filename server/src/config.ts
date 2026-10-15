@@ -7,8 +7,6 @@ export interface ModelConfig {
   answer: string;
   /** Default model for node naming. */
   naming: string;
-  /** Model that generates suggested follow-up prompts (`OTAGO_SUGGEST_MODEL`). */
-  suggest: string;
 }
 
 export interface Config {
@@ -27,7 +25,6 @@ export const DEFAULT_MODELS: ModelConfig = {
   available: ['claude-opus-5-5', 'claude-sonnet-5', 'claude-fable-5-1', 'claude-haiku-4-5'],
   answer: 'claude-opus-5-5',
   naming: 'claude-haiku-4-5',
-  suggest: 'claude-haiku-4-5',
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -43,8 +40,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 function loadModels(env: NodeJS.ProcessEnv): ModelConfig {
   const answer = env.OTAGO_MODEL || DEFAULT_MODELS.answer;
   const naming = env.OTAGO_NAMING_MODEL || DEFAULT_MODELS.naming;
-  // Defaults to the resolved naming model (both are the cheap model class).
-  const suggest = env.OTAGO_SUGGEST_MODEL || naming;
   const listed = (env.OTAGO_MODELS ?? '')
     .split(',')
     .map((model) => model.trim())
@@ -52,9 +47,8 @@ function loadModels(env: NodeJS.ProcessEnv): ModelConfig {
   const base = listed.length > 0 ? listed : DEFAULT_MODELS.available;
   // Defaults are always selectable, even when missing from OTAGO_MODELS.
   return {
-    available: [...new Set([...base, answer, naming, suggest])],
+    available: [...new Set([...base, answer, naming])],
     answer,
     naming,
-    suggest,
   };
 }

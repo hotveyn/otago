@@ -21,14 +21,6 @@ export const treeNotFound = (treeId: string) =>
 export const nodeNotFound = (nodeId: string) =>
   notFound(`Node not found: ${nodeId}`, 'node_not_found');
 
-/** Exact message of contract `suggested-prompts/contracts/errors.ts`. */
-export const SUGGESTIONS_FAILED_MESSAGE =
-  'Could not generate suggestions. They will be retried the next time the node is opened.';
-
-/** 502: generation failed or its result was discarded; node.md stays MISSING. */
-export const suggestionsFailed = () =>
-  new ApiError(502, SUGGESTIONS_FAILED_MESSAGE, 'suggestions_failed');
-
 export const storageFull = () =>
   payloadTooLarge(
     'Demo storage is full: browser storage holds about 5 MB. Delete some files or nodes, or reset the demo.',

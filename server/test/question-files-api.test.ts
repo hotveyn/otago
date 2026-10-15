@@ -139,7 +139,12 @@ describe('POST /api/trees/:tree/questions with files', () => {
     const input = agent.calls[0];
     expect(input?.question).toBe('Q');
     expect(seen[0]?.startsWith(`${path.basename(input?.stagingDir ?? '')}/`)).toBe(true);
-    const prompt = buildUserPrompt(input?.chain ?? [], input?.question ?? '', input?.files);
+    const prompt = buildUserPrompt(
+      input?.chain ?? [],
+      input?.question ?? '',
+      input?.files,
+      input?.openSuggestions,
+    );
     expect(prompt).toContain(`${seen[0]} (image, ${pngBytes().length} bytes)`);
     expect(prompt).toContain(`${seen[1]} (text extracted from Book.fb2,`);
   });
@@ -607,7 +612,12 @@ describe('POST /api/trees/:tree/questions with files', () => {
 
     await askAndSettle(ctx, { parentId: 'parent/child', text: 'follow up' });
     const followInput = agent.calls.at(-1);
-    const followPrompt = buildUserPrompt(followInput?.chain ?? [], 'follow up', followInput?.files);
+    const followPrompt = buildUserPrompt(
+      followInput?.chain ?? [],
+      'follow up',
+      followInput?.files,
+      followInput?.openSuggestions,
+    );
     expect(followPrompt).toContain(
       '<files>\nparent/child/files/notes.md (text, 3 bytes)\n</files>',
     );
@@ -620,6 +630,7 @@ describe('POST /api/trees/:tree/questions with files', () => {
       siblingInput?.chain ?? [],
       'sibling',
       siblingInput?.files,
+      siblingInput?.openSuggestions,
     );
     expect(siblingPrompt).not.toContain('files/notes.md');
   });

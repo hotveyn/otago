@@ -1,0 +1,38 @@
+{
+  "slug": "topic-split",
+  "title": "Split a big topic: the first part now, the rest as next questions",
+  "created": "2026-10-15T11:12:32Z",
+  "workspace_root": "/Users/ioannshestopalov/Programming/otago",
+  "contracts": {
+    "owner": "server",
+    "generated": false
+  },
+  "projects": [
+    {
+      "name": "server",
+      "root": "server",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "server",
+      "stage": "implemented"
+    },
+    {
+      "name": "web",
+      "root": "web",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "client",
+      "stage": "implemented"
+    },
+    {
+      "name": "demo",
+      "root": "demo",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "client",
+      "stage": "implemented"
+    }
+  ],
+  "archived": "2026-10-15T16:02:26.295Z",
+  "archived_to": ".claude/features/archive/15-10-2026/topic-split"
+}

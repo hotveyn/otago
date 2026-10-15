@@ -38,6 +38,26 @@ describe('SuggestionList (server render smoke test)', () => {
     expect(html).toContain(`title="${text}"`);
   });
 
+  it('renders every item (no cap)', () => {
+    const items = Array.from({ length: 8 }, (_, i) => ({ ...own, text: `Вопрос ${i}` }));
+    const html = render(items);
+    expect(html.match(/<button/g)).toHaveLength(8);
+    const positions = items.map((item) => html.indexOf(`>${item.text}</span>`));
+    expect(positions.every((p) => p >= 0)).toBe(true);
+    expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+  });
+
+  it('tags every item of an inherited-only list', () => {
+    const items: Suggestion[] = [
+      { text: 'Глава 4', target: 'план/глава-3', up: 1 },
+      { text: 'Обзор', target: 'план', up: 2 },
+    ];
+    const html = render(items);
+    expect(html.match(/class="suggestion-source"/g)).toHaveLength(2);
+    expect(html).toContain('from <bdi dir="auto">глава-3</bdi>');
+    expect(html).toContain('from <bdi dir="auto">план</bdi>');
+  });
+
   it('keeps the order', () => {
     const html = render([inherited, own]);
     expect(html.indexOf('Зачем это?')).toBeLessThan(html.indexOf('Что дальше?'));

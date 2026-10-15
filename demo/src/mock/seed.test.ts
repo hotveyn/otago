@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
-  MAX_SUGGESTIONS,
+  SUGGESTIONS_MARKER,
+  splitSuggestionBlock,
+} from '../../../server/src/storage/suggestion-block';
+import {
   sanitizeSuggestionText,
   setSuggestionsLine,
   suggestionKey,
@@ -146,7 +149,7 @@ describe('seed trees', () => {
     }
   });
 
-  it('stores suggestions in the exact write form, sanitized, own first, at most 5', () => {
+  it('stores suggestions in the exact write form, sanitized, own first', () => {
     const nodeFiles = Object.entries(seedFiles()).filter(([path]) => path.endsWith('/node.md'));
     let withKey = 0;
     for (const [path, raw] of nodeFiles) {
@@ -159,7 +162,6 @@ describe('seed trees', () => {
       expect(stored, path).toBeDefined();
       expect(setSuggestionsLine(raw, stored ?? []), path).toBe(raw);
       const items = stored ?? [];
-      expect(items.length, path).toBeLessThanOrEqual(MAX_SUGGESTIONS);
       for (const item of items) expect(sanitizeSuggestionText(item.text), path).toBe(item.text);
       const firstInherited = items.findIndex((item) => item.up > 0);
       if (firstInherited !== -1) {
@@ -193,22 +195,26 @@ describe('seed trees', () => {
     }
   });
 
-  it('showcases missing, empty, deep inherited and used suggestions', () => {
-    let missing = 0;
+  it('showcases fallback, no-list, empty, deep inherited and used suggestions', () => {
+    let fallback = 0;
+    let none = 0;
     let empty = 0;
     let deep = 0;
     let hiddenAsUsed = 0;
     for (const tree of trees) {
       for (const id of flatten(demo.trees.hierarchy(tree.id))) {
         const stored = demo.trees.suggestionChain(tree.id, id).at(-1)?.suggestions;
-        if (stored === undefined) missing++;
-        else if (stored.length === 0) empty++;
-        if (stored?.some((item) => item.up >= 2)) deep++;
         const view = demo.trees.suggestionsView(tree.id, id);
+        if (stored === undefined) {
+          if (view.suggestions.length === 0) none++;
+          else if (view.suggestions.every((item) => item.up > 0)) fallback++;
+        } else if (stored.length === 0) empty++;
+        if (stored?.some((item) => item.up >= 2)) deep++;
         if (stored && view.suggestions.length < stored.length) hiddenAsUsed++;
       }
     }
-    expect(missing).toBeGreaterThanOrEqual(1);
+    expect(fallback).toBeGreaterThanOrEqual(1);
+    expect(none).toBeGreaterThanOrEqual(1);
     expect(empty).toBeGreaterThanOrEqual(1);
     expect(deep).toBeGreaterThanOrEqual(1);
     expect(hiddenAsUsed).toBeGreaterThanOrEqual(1);
@@ -217,5 +223,36 @@ describe('seed trees', () => {
       'How do slices borrow part of a String?',
       'What happens to ownership when I pass a value to a function?',
     ]);
+  });
+
+  it('a node without a list shows its nearest stored ancestor list, one level further up', () => {
+    const tree = 'rust-ownership';
+    const parent = demo.trees.suggestionsView(tree, 'what-is-ownership/borrowing-rules');
+    const child = demo.trees.suggestionsView(
+      tree,
+      'what-is-ownership/borrowing-rules/mutable-references',
+    );
+    expect(demo.trees.suggestionChain(tree, child.node).at(-1)?.suggestions).toBeUndefined();
+    expect(child.suggestions.map((item) => item.text)).toEqual([
+      'How do lifetimes relate to borrowing?',
+      'Can I borrow mutably inside a loop?',
+      'How do slices borrow part of a String?',
+      'What happens to ownership when I pass a value to a function?',
+    ]);
+    expect(child.suggestions).toEqual(
+      parent.suggestions.map((item) => ({ ...item, up: item.up + 1 })),
+    );
+    expect(new Set(child.suggestions.map((item) => item.target))).toEqual(
+      new Set(['what-is-ownership/borrowing-rules', 'what-is-ownership']),
+    );
+  });
+
+  it('stored seed answers never contain a suggestion block', () => {
+    const nodeFiles = Object.entries(seedFiles()).filter(([path]) => path.endsWith('/node.md'));
+    for (const [path, raw] of nodeFiles) {
+      const { assistant } = parseNodeFile(raw);
+      expect(assistant, path).not.toContain(SUGGESTIONS_MARKER);
+      expect(splitSuggestionBlock(assistant).items, path).toBeUndefined();
+    }
   });
 });

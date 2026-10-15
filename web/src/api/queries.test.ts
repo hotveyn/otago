@@ -1,13 +1,6 @@
 import { QueryClient } from '@tanstack/react-query';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api } from './client';
-import {
-  dropTreeCaches,
-  generateSuggestionsOnce,
-  keys,
-  moveTreeCaches,
-  seedDoneChain,
-} from './queries';
+import { describe, expect, it } from 'vitest';
+import { dropTreeCaches, keys, moveTreeCaches, seedDoneChain } from './queries';
 import type {
   ChainNode,
   DoneQuestion,
@@ -66,8 +59,16 @@ describe('dropTreeCaches', () => {
     client.setQueryData(keys.source('old', 'book.pdf'), 'text');
     client.setQueryData(keys.attachment('old', 'a', 'x.svg', 1), '<svg/>');
     client.setQueryData(keys.attachmentBlob('old', 'a', 'x.pdf', 1), 'blob');
-    client.setQueryData(keys.suggestions('old', 'a'), { node: 'a', state: 'missing' });
-    client.setQueryData(keys.suggestions('other', 'a'), { node: 'a', state: 'missing' });
+    client.setQueryData(keys.suggestions('old', 'a'), {
+      node: 'a',
+      state: 'ready',
+      suggestions: [],
+    });
+    client.setQueryData(keys.suggestions('other', 'a'), {
+      node: 'a',
+      state: 'ready',
+      suggestions: [],
+    });
     client.setQueryData(keys.chain('other', 'a'), []);
     client.setQueryData(keys.chain('new', 'a'), []);
 
@@ -151,67 +152,10 @@ describe('seedDoneChain', () => {
 });
 
 describe('suggestions cache', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
   const ready = (node: string): SuggestionsReady => ({
     node,
     state: 'ready',
     suggestions: [{ text: 'Что дальше?', target: node, up: 0 }],
-  });
-
-  function deferred<T>() {
-    let resolve: (value: T) => void = () => undefined;
-    let reject: (error: unknown) => void = () => undefined;
-    const promise = new Promise<T>((res, rej) => {
-      resolve = res;
-      reject = rej;
-    });
-    return { promise, resolve, reject };
-  }
-
-  it('makes one POST for concurrent calls and caches the result', async () => {
-    const client = new QueryClient();
-    const pending = deferred<SuggestionsReady>();
-    const spy = vi.spyOn(api, 'generateSuggestions').mockReturnValue(pending.promise);
-    const first = generateSuggestionsOnce(client, 't', 'план/глава');
-    const second = generateSuggestionsOnce(client, 't', 'план/глава');
-    expect(second).toBe(first);
-    expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy).toHaveBeenCalledWith('t', 'план/глава');
-    pending.resolve(ready('план/глава'));
-    await expect(first).resolves.toEqual(ready('план/глава'));
-    await expect(second).resolves.toEqual(ready('план/глава'));
-    expect(client.getQueryData(keys.suggestions('t', 'план/глава'))).toEqual(ready('план/глава'));
-  });
-
-  it('leaves the cache alone on failure and lets the next call try again', async () => {
-    const client = new QueryClient();
-    const missing = { node: 'a', state: 'missing', suggestions: [] };
-    client.setQueryData(keys.suggestions('t', 'a'), missing);
-    const spy = vi
-      .spyOn(api, 'generateSuggestions')
-      .mockRejectedValueOnce(new Error('502'))
-      .mockResolvedValueOnce(ready('a'));
-    await expect(generateSuggestionsOnce(client, 't', 'a')).rejects.toThrow('502');
-    expect(client.getQueryData(keys.suggestions('t', 'a'))).toEqual(missing);
-    await expect(generateSuggestionsOnce(client, 't', 'a')).resolves.toEqual(ready('a'));
-    expect(spy).toHaveBeenCalledTimes(2);
-  });
-
-  it('keeps nodes and trees apart', async () => {
-    const client = new QueryClient();
-    const pending = deferred<SuggestionsReady>();
-    const spy = vi.spyOn(api, 'generateSuggestions').mockReturnValue(pending.promise);
-    const calls = [
-      generateSuggestionsOnce(client, 't', 'a'),
-      generateSuggestionsOnce(client, 't', 'b'),
-      generateSuggestionsOnce(client, 'u', 'a'),
-    ];
-    expect(spy).toHaveBeenCalledTimes(3);
-    pending.resolve(ready('a'));
-    await Promise.all(calls);
   });
 
   it('invalidates every node of a tree through the tree prefix', async () => {

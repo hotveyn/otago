@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ApiError } from '../../../web/src/api/client';
 import type { HierarchyNode } from '../../../web/src/api/types';
-import { makeDemo, NODE, SMALL_SEED, scriptedSuggest } from './test-helpers';
+import { makeDemo, NODE, SMALL_SEED } from './test-helpers';
 
 const ids = (nodes: HierarchyNode[]): string[] =>
   nodes.flatMap((node) => [node.id, ...ids(node.children)]);
@@ -207,17 +207,26 @@ describe('demo api: stored suggestions stay out of other payloads', () => {
     });
   });
 
-  it('structural routes never get a 409 from a running suggestion generation', async () => {
-    const script = scriptedSuggest([{ picks: 'gate' }]);
-    const { demo } = makeDemo({ suggest: script.simulate });
-    const post = demo.api.generateSuggestions('t', 'c').catch((e: unknown) => e);
-    expect(demo.suggestions.inFlight()).toBe(1);
+  it('structural routes and suggestion reads never conflict', async () => {
+    const { demo } = makeDemo({ seed });
+    const next = (target: string, up: number) => [{ text: 'Next?', target, up }];
+    // A streaming question holds the shared lock: reads still work.
+    const question = await demo.api.startQuestion('t', {
+      parentId: 'c',
+      text: 'Busy?',
+      context: { kind: 'main' },
+    });
+    expect((await apiError(demo.api.moveNodes('t', ['a/b'], ''))).status).toBe(409);
+    expect((await demo.api.getSuggestions('t', 'a')).suggestions).toEqual(next('a', 0));
+    await demo.api.cancelQuestion(question.id);
+    // No question runs: every structural route succeeds; reads follow the new ids.
     const { deleted } = await demo.api.deleteNodes('t', ['a/b']);
     await demo.api.restoreNodes('t', Object.values(deleted));
-    await demo.api.moveNodes('t', ['a/b'], '');
-    await demo.api.renameNode('t', 'b', 'bee');
+    await demo.api.moveNodes('t', ['c'], 'a');
+    expect((await demo.api.getSuggestions('t', 'a/c')).suggestions).toEqual(next('a', 1));
+    await demo.api.renameNode('t', 'a', 'ay');
+    expect((await demo.api.getSuggestions('t', 'ay/c')).suggestions).toEqual(next('ay', 1));
     await demo.api.updateTree('t', { title: 'Renamed' });
-    script.calls[0]?.open([]);
-    expect(await post).toMatchObject({ status: 404, code: 'tree_not_found' });
+    expect((await demo.api.getSuggestions('renamed', 'ay')).suggestions).toEqual(next('ay', 0));
   });
 });

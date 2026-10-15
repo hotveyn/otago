@@ -392,36 +392,31 @@ describe('suggestions', () => {
     expect(init?.method).toBeUndefined();
   });
 
-  it('returns the missing shape as is', async () => {
-    const missing = { node: 'a', state: 'missing', suggestions: [] };
-    mockFetch(json(missing));
-    expect(await api.getSuggestions('t', 'a')).toEqual(missing);
-  });
-
-  it('generates with a JSON POST of the node', async () => {
-    const fetchMock = mockFetch(json(ready));
-    expect(await api.generateSuggestions('my tree', 'план/глава-1')).toEqual(ready);
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('/api/trees/my%20tree/suggestions');
-    expect(init.method).toBe('POST');
-    expect(new Headers(init.headers).get('content-type')).toBe('application/json');
-    expect(JSON.parse(init.body as string)).toEqual({ node: 'план/глава-1' });
-  });
-
-  it('reads the 502 suggestions_failed code', async () => {
-    const message =
-      'Could not generate suggestions. They will be retried the next time the node is opened.';
-    mockFetch(json({ error: message, code: 'suggestions_failed' }, 502));
-    const error = await api.generateSuggestions('t', 'a').catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(ApiError);
-    expect((error as ApiError).code).toBe('suggestions_failed');
-    expect((error as ApiError).message).toBe(message);
-    expect(isApiError(error, 502, 'suggestions_failed')).toBe(true);
+  it('returns an inherited-only ready list as is', async () => {
+    const inherited = {
+      node: 'a/b',
+      state: 'ready',
+      suggestions: [{ text: 'Глава 4', target: 'a', up: 1 }],
+    };
+    mockFetch(json(inherited));
+    expect(await api.getSuggestions('t', 'a/b')).toEqual(inherited);
   });
 
   it('keeps the 404 node_not_found code', async () => {
     mockFetch(json({ error: 'Node not found', code: 'node_not_found' }, 404));
-    const error = await api.generateSuggestions('t', 'a').catch((e: unknown) => e);
+    const error = await api.getSuggestions('t', 'a').catch((e: unknown) => e);
     expect(isApiError(error, 404, 'node_not_found')).toBe(true);
+  });
+
+  it('does not recognize suggestions_failed as a code', async () => {
+    mockFetch(json({ error: 'x', code: 'suggestions_failed' }, 502));
+    const error = await api.getSuggestions('t', 'a').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(502);
+    expect((error as ApiError).code).toBeUndefined();
+  });
+
+  it('exposes no generateSuggestions', () => {
+    expect('generateSuggestions' in api).toBe(false);
   });
 });

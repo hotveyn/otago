@@ -3,16 +3,13 @@ import { type Options, query } from '@anthropic-ai/claude-agent-sdk';
 import { createAttachmentMcpServer, SAVE_ATTACHMENT_TOOL_ID } from './attachment-tool.js';
 import {
   buildNamingPrompt,
-  buildSuggestPrompt,
   buildSystemPrompt,
   buildUserPrompt,
   NAMING_SYSTEM_PROMPT,
-  parseSuggestReply,
-  SUGGEST_SYSTEM_PROMPT,
   sanitizeNodeName,
 } from './prompt.js';
 import { pathGuardMatcher, TRASH_DENY_RULE } from './trash-guard.js';
-import type { Agent, AgentEvent, AskInput, NameInput, SuggestInput, SuggestPick } from './types.js';
+import type { Agent, AgentEvent, AskInput, NameInput } from './types.js';
 
 export const ALLOWED_TOOLS = ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch'];
 export const DENIED_TOOLS = ['Write', 'Edit', 'Bash', 'NotebookEdit'];
@@ -25,6 +22,17 @@ const baseOptions: Options = {
   mcpServers: {},
   strictMcpConfig: true,
   env: { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: 'false' },
+};
+
+/**
+ * Naming: no tools, one turn and no extended thinking (the SDK turns thinking on by default,
+ * which only adds latency to a one-word reply).
+ */
+const oneShotOptions: Options = {
+  ...baseOptions,
+  tools: [],
+  maxTurns: 1,
+  thinking: { type: 'disabled' },
 };
 
 export function buildAskOptions(
@@ -55,7 +63,7 @@ export function createClaudeAgent(): Agent {
     async *ask(input: AskInput): AsyncGenerator<AgentEvent> {
       const abortController = linkedAbortController(input.signal);
       const run = query({
-        prompt: buildUserPrompt(input.chain, input.question, input.files),
+        prompt: buildUserPrompt(input.chain, input.question, input.files, input.openSuggestions),
         options: buildAskOptions(input, abortController),
       });
       let text = '';
@@ -99,11 +107,9 @@ export function createClaudeAgent(): Agent {
       const run = query({
         prompt: buildNamingPrompt({ question, answer }),
         options: {
-          ...baseOptions,
+          ...oneShotOptions,
           model,
           systemPrompt: NAMING_SYSTEM_PROMPT,
-          tools: [],
-          maxTurns: 1,
           abortController,
         },
       });
@@ -120,34 +126,6 @@ export function createClaudeAgent(): Agent {
         abortController.abort();
       }
       throw new Error('Naming returned no result');
-    },
-
-    async suggest(input: SuggestInput): Promise<SuggestPick[]> {
-      const abortController = linkedAbortController(input.signal);
-      const run = query({
-        prompt: buildSuggestPrompt(input),
-        options: {
-          ...baseOptions,
-          model: input.model,
-          systemPrompt: SUGGEST_SYSTEM_PROMPT,
-          tools: [],
-          maxTurns: 1,
-          abortController,
-        },
-      });
-      try {
-        for await (const message of run) {
-          if (message.type === 'result') {
-            if (message.subtype !== 'success' || message.is_error) {
-              throw new Error(`Suggestions failed (${message.subtype})`);
-            }
-            return parseSuggestReply(message.result, input.candidates.length);
-          }
-        }
-      } finally {
-        abortController.abort();
-      }
-      throw new Error('Suggestions returned no result');
     },
   };
 }

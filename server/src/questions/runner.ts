@@ -3,13 +3,18 @@ import {
   type AnswerStaging,
   type ChainNode,
   createNode,
+  finalizeSuggestions,
   type HeldFiles,
   listAttachments,
   listUserFiles,
   nodeDirOf,
   type PromptFile,
+  readCandidates,
+  SuggestionBlockFilter,
+  type SuggestionCandidate,
+  splitSuggestionBlock,
+  suggestionKey,
 } from '../storage/index.js';
-import type { PendingSuggestions, Suggestions } from '../suggestions/index.js';
 import type { QuestionRegistry } from './registry.js';
 import type {
   QuestionFailureCode,
@@ -56,8 +61,6 @@ export interface RunnerDeps {
   timings: QuestionTimings;
   log: QuestionLogger;
   hooks?: QuestionHooks;
-  /** Generates the node's suggested prompts in parallel with naming (never delays the commit). */
-  suggestions?: Suggestions;
 }
 
 class AttemptAborted extends Error {
@@ -103,9 +106,11 @@ function describeDuration(ms: number): string {
 }
 
 /**
- * Run one attempt: ask the agent (chunks → registry), seal the attachments, name the node
- * from the question and the answer, commit the staging folder as the node. The lock is
- * released before the terminal event (`done` / `failed` / `removed{cancelled}`). Never throws.
+ * Run one attempt: read the parent's open suggestions, ask the agent (chunks → suggestion
+ * block filter → registry), split the block off the answer, seal the attachments, name the
+ * node from the question and the answer, commit the staging folder as the node (with the
+ * block's finalized suggestions). The lock is released before the terminal event (`done` /
+ * `failed` / `removed{cancelled}`). Never throws.
  */
 export async function runAttempt(job: QuestionJob, deps: RunnerDeps): Promise<void> {
   const { agent, registry, timings } = deps;
@@ -114,8 +119,17 @@ export async function runAttempt(job: QuestionJob, deps: RunnerDeps): Promise<vo
   const timeout: AbortReason = 'timeout';
   const watchdog = setTimeout(() => controller.abort(timeout), timings.attemptTimeoutMs);
   watchdog.unref?.();
-  let suggestions: PendingSuggestions | undefined;
   try {
+    // The parent's open suggestions (read under the shared lock); never fails the question.
+    const askedKeys = new Set([...job.chain.map((node) => node.user), job.text].map(suggestionKey));
+    const candidates = await readCandidates(job.treeDir, job.chain, askedKeys).catch(
+      (error: unknown): SuggestionCandidate[] => {
+        deps.log.warn(error, `Could not read the open suggestions for question ${job.id}`);
+        return [];
+      },
+    );
+    throwIfAborted(signal);
+
     let answer: Extract<AgentEvent, { type: 'done' }> | undefined;
     const events = agent.ask({
       treeDir: job.treeDir,
@@ -123,38 +137,48 @@ export async function runAttempt(job: QuestionJob, deps: RunnerDeps): Promise<vo
       chain: job.chain,
       question: job.question,
       files: job.promptFiles,
+      openSuggestions: candidates.map((candidate) => candidate.text),
       model: job.model,
       signal,
       staging,
       stagingDir: staging.dir,
     });
+    // The suggestion block never reaches chunks (nor the registry text snapshots send).
+    const filter = new SuggestionBlockFilter();
     for await (const event of events) {
       if (signal.aborted) break;
-      if (event.type === 'chunk') registry.appendChunk(job.id, job.attempt, event.text);
+      if (event.type === 'chunk')
+        registry.appendChunk(job.id, job.attempt, filter.push(event.text));
       else answer = event;
     }
     throwIfAborted(signal);
     if (!answer) throw new Error('Agent finished without an answer');
     const final = answer;
+    registry.appendChunk(job.id, job.attempt, filter.end());
+
+    const split = splitSuggestionBlock(final.text);
+    if (split.rejected) {
+      deps.log.warn(
+        { question: job.id },
+        'Suggestions marker kept in the answer (not a valid final block)',
+      );
+    }
+    if (split.answer.trim() === '') throw new Error('Agent returned an empty answer');
+    const suggestions =
+      split.items === undefined
+        ? undefined
+        : finalizeSuggestions(split.items, candidates, { depth: job.chain.length, askedKeys });
 
     // All attachment events land before `naming`; drops an empty `attachments/`.
     await serverSide(() => staging.seal());
     throwIfAborted(signal);
     registry.setNaming(job.id, job.attempt);
-    // Runs alongside naming; the commit takes whatever is ready and never waits for it.
-    suggestions = deps.suggestions?.forAnswer({
-      treeDir: job.treeDir,
-      parentId: job.parentId,
-      question: job.namingQuestion,
-      answer: final.text,
-      signal,
-    });
 
     let name: string;
     try {
       name = await agent.name({
         question: job.namingQuestion,
-        answer: final.text,
+        answer: split.answer,
         model: job.namingModel,
         signal: AbortSignal.any([signal, AbortSignal.timeout(timings.namingTimeoutMs)]),
       });
@@ -170,11 +194,9 @@ export async function runAttempt(job: QuestionJob, deps: RunnerDeps): Promise<vo
     job.committing = true;
     clearTimeout(watchdog);
     const created = new Date().toISOString();
-    let ready: ReturnType<PendingSuggestions['peek']>;
     const nodeId = await serverSide(async () => {
       await deps.hooks?.beforeCommit?.(job.id);
-      // Succeeded → stored with the node; failed or still running → missing for now.
-      ready = suggestions?.peek();
+      // A valid block (even an empty one) → stored with the node; none → no key (inherits).
       return createNode(
         job.treeDir,
         job.parentId,
@@ -183,20 +205,12 @@ export async function runAttempt(job: QuestionJob, deps: RunnerDeps): Promise<vo
           created,
           model: final.model,
           user: job.text,
-          assistant: final.text,
-          ...(Array.isArray(ready) ? { suggestions: ready } : {}),
+          assistant: split.answer,
+          ...(suggestions ? { suggestions } : {}),
         },
         { stagingDir: staging.dir },
       );
     });
-    // Still running: the suggestion service writes the list into the committed node later.
-    if (suggestions && ready === undefined) {
-      suggestions.adopt(registry.get(job.id)?.tree ?? '', nodeId, {
-        created,
-        user: job.text,
-        assistant: final.text,
-      });
-    }
     // The node exists from here on: the question is done whatever happens next.
     // Renamed into the node: sweeps may consider the staging path again.
     staging.release();
@@ -206,8 +220,6 @@ export async function runAttempt(job: QuestionJob, deps: RunnerDeps): Promise<vo
     job.release();
     registry.complete(job.id, job.attempt, { nodeId, attachments, files });
   } catch (error) {
-    // Not committed: the node's suggestion generation has nothing to write into.
-    suggestions?.abort();
     await settleFailure(job, deps, error).catch((cause: unknown) =>
       deps.log.error(cause, `Could not tear down question ${job.id}`),
     );

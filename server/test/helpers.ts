@@ -7,8 +7,6 @@ import type {
   AskInput,
   AttachmentStaging,
   NameInput,
-  SuggestInput,
-  SuggestPick,
 } from '../src/agent/index.js';
 import { TreeLocks } from '../src/agent/index.js';
 import { buildApp } from '../src/app.js';
@@ -18,11 +16,11 @@ import {
   type FailedQuestion,
   type QuestionHooks,
   type QuestionInfo,
+  type QuestionLogger,
   Questions,
   type QuestionTimings,
   type RegistryEvent,
 } from '../src/questions/index.js';
-import { Suggestions } from '../src/suggestions/index.js';
 
 export async function makeTempDir(): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'otago-test-'));
@@ -83,29 +81,24 @@ export interface FakeAgentOptions {
   nameGate?: (input: NameInput) => Promise<void>;
   /** `name` throws this message. */
   nameError?: string;
-  /** Raw picks `suggest` returns (or computes from its input). Default `[]`. */
-  suggest?: SuggestPick[] | ((input: SuggestInput) => SuggestPick[] | Promise<SuggestPick[]>);
-  /** Awaited by `suggest` (raced with its signal). */
-  suggestGate?: (input: SuggestInput) => Promise<void>;
-  /** `suggest` throws this message. */
-  suggestError?: string;
 }
 
+/**
+ * Scripted agent. Suggestion blocks are plain chunks (`suggestionBlock([...])` from the
+ * storage module): the agent streams raw text, the runner strips the block.
+ */
 export type FakeAgent = Agent & {
   calls: AskInput[];
   nameCalls: NameInput[];
-  suggestCalls: SuggestInput[];
 };
 
 export function fakeAgent(options: FakeAgentOptions = {}): FakeAgent {
   const chunks = options.chunks ?? ['Hello', ', world'];
   const calls: AskInput[] = [];
   const nameCalls: NameInput[] = [];
-  const suggestCalls: SuggestInput[] = [];
   return {
     calls,
     nameCalls,
-    suggestCalls,
     async *ask(input): AsyncGenerator<AgentEvent> {
       calls.push(input);
       await options.onAsk?.(input);
@@ -134,13 +127,6 @@ export function fakeAgent(options: FakeAgentOptions = {}): FakeAgent {
       if (options.nameError) throw new Error(options.nameError);
       return options.name ?? 'test-node';
     },
-    async suggest(input) {
-      suggestCalls.push(input);
-      if (options.suggestGate) await raceAbort(options.suggestGate(input), input.signal);
-      if (options.suggestError) throw new Error(options.suggestError);
-      const picks = options.suggest ?? [];
-      return typeof picks === 'function' ? picks(input) : picks;
-    },
   };
 }
 
@@ -153,11 +139,9 @@ export function perQuestionAgent(
 ): FakeAgent {
   const calls: AskInput[] = [];
   const nameCalls: NameInput[] = [];
-  const suggestCalls: SuggestInput[] = [];
   return {
     calls,
     nameCalls,
-    suggestCalls,
     async *ask(input): AsyncGenerator<AgentEvent> {
       calls.push(input);
       yield { type: 'chunk', text: `${input.question}:1` };
@@ -171,10 +155,6 @@ export function perQuestionAgent(
       nameCalls.push(input);
       return options.names?.[input.question] ?? 'test-node';
     },
-    async suggest(input) {
-      suggestCalls.push(input);
-      return [];
-    },
   };
 }
 
@@ -182,7 +162,6 @@ export const TEST_MODELS: ModelConfig = {
   available: ['answer-default', 'answer-alt', 'naming-default', 'naming-alt'],
   answer: 'answer-default',
   naming: 'naming-default',
-  suggest: 'naming-default',
 };
 
 export interface MakeAppExtra {
@@ -190,8 +169,8 @@ export interface MakeAppExtra {
   locks?: TreeLocks;
   timings?: Partial<QuestionTimings>;
   hooks?: QuestionHooks;
-  /** Timeout of one suggestion call (default: the service default). */
-  suggestTimeoutMs?: number;
+  /** Logger of the questions service (default: silent), e.g. a spy to assert warnings. */
+  log?: QuestionLogger;
 }
 
 /** Records every registry event from creation on (an in-process subscriber). */
@@ -257,12 +236,6 @@ export async function makeApp(
   const held = await makeTempDir();
   const locks = extra.locks ?? new TreeLocks();
   const allowPrivateUrls = extra.allowPrivateUrls ?? false;
-  const suggestions = new Suggestions({
-    agent,
-    treesDir: temp.dir,
-    model: models.suggest,
-    timings: extra.suggestTimeoutMs === undefined ? {} : { timeoutMs: extra.suggestTimeoutMs },
-  });
   const questions = new Questions({
     agent,
     locks,
@@ -271,7 +244,7 @@ export async function makeApp(
     heldDir: held.dir,
     timings: extra.timings,
     hooks: extra.hooks,
-    suggestions,
+    log: extra.log,
   });
   const events = recordEvents(questions);
   const app = await buildApp({
@@ -281,7 +254,6 @@ export async function makeApp(
     locks,
     allowPrivateUrls,
     questions,
-    suggestions,
   });
   return {
     app,
@@ -289,7 +261,6 @@ export async function makeApp(
     heldDir: held.dir,
     locks,
     questions,
-    suggestions,
     events,
     close: async () => {
       await app.close();
@@ -317,15 +288,11 @@ export interface Settled {
   events: RegistryEvent[];
 }
 
-/**
- * Expect a 202 and wait until the question is done, failed or removed, and until no
- * suggestion generation runs any more (an at-save generation may finish after the commit).
- */
+/** Expect a 202 and wait until the question is done, failed or removed. */
 export async function settle(ctx: TestContext, res: Settled['res']): Promise<Settled> {
   if (res.statusCode !== 202) throw new Error(`Expected 202, got ${res.statusCode}: ${res.body}`);
   const started = res.json().question as QuestionInfo;
   const question = await ctx.questions.settled(started.id);
-  await ctx.suggestions.idle();
   return { res, started, question, events: ctx.events.forQuestion(started.id) };
 }
 

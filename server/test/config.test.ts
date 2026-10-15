@@ -15,20 +15,22 @@ describe('trees dir config', () => {
   });
 });
 
-describe('suggestion model config', () => {
-  it('defaults to the naming default, also when the naming model is overridden', () => {
-    expect(loadConfig({}).models.suggest).toBe('claude-haiku-4-5');
-    const { models } = loadConfig({ OTAGO_NAMING_MODEL: 'claude-sonnet-5' });
-    expect(models.suggest).toBe('claude-sonnet-5');
-    expect(loadConfig({ OTAGO_SUGGEST_MODEL: '' }).models.suggest).toBe('claude-haiku-4-5');
-  });
-
-  it('uses OTAGO_SUGGEST_MODEL and keeps it selectable', () => {
+describe('model config', () => {
+  it('ignores a leftover OTAGO_SUGGEST_MODEL', () => {
     const { models } = loadConfig({
       OTAGO_MODELS: 'claude-opus-5-5',
       OTAGO_SUGGEST_MODEL: 'claude-fable-5-1',
     });
-    expect(models.suggest).toBe('claude-fable-5-1');
-    expect(models.available).toContain('claude-fable-5-1');
+    expect(models).not.toHaveProperty('suggest');
+    expect(models.available).not.toContain('claude-fable-5-1');
+    const listed = loadConfig({
+      OTAGO_MODELS: 'claude-opus-5-5,claude-fable-5-1',
+      OTAGO_SUGGEST_MODEL: 'claude-fable-5-1',
+    });
+    expect(listed.models.available).toEqual([
+      'claude-opus-5-5',
+      'claude-fable-5-1',
+      'claude-haiku-4-5',
+    ]);
   });
 });

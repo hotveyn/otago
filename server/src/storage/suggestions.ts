@@ -1,5 +1,5 @@
 // Suggested follow-up prompts: storage format, text rules, resolution and finalization.
-// Mirrors .claude/features/suggested-prompts/contracts/{node-file,suggestions}.ts.
+// Mirrors .claude/features/inline-suggestions/contracts/{node-file,suggestions}.ts.
 // Pure and Node-free (imports only ../text.js): demo/src/mock/ imports this file as-is.
 import { collapseWhitespace, truncateGraphemes } from '../text.js';
 
@@ -20,36 +20,26 @@ export interface Suggestion {
   up: number;
 }
 
-/** Inheritance candidate offered to the generator. */
+/** Open suggestion offered to the answering agent (kept by copying its text). */
 export interface SuggestionCandidate {
   text: string;
   /** Id of the ancestor that owns the text (up 0 there). */
   source: string;
-  /** Index of that ancestor in the generation chain (0 = top-level node). */
+  /** Index of that ancestor in the ancestors chain (0 = top-level node). */
   origin: number;
 }
 
-/** What the generator returns: a new own text, or a 0-based pick of a candidate. */
-export type SuggestPick = { text: string } | { keep: number };
-
+/** `GET …/suggestions` response (`state` is always `'ready'`). */
 export interface SuggestionsReady {
   node: string;
   state: 'ready';
   suggestions: Suggestion[];
 }
 
-export interface SuggestionsMissing {
-  node: string;
-  state: 'missing';
-  suggestions: [];
-}
-
-export type SuggestionsResponse = SuggestionsReady | SuggestionsMissing;
+export type SuggestionsResponse = SuggestionsReady;
 
 /** Frontmatter key of the stored list. */
 export const SUGGESTIONS_KEY = 'suggestions';
-/** At most this many items are stored per node (own first, then inherited). */
-export const MAX_SUGGESTIONS = 5;
 /** Text cap, in graphemes (no ellipsis). */
 export const SUGGESTION_MAX_GRAPHEMES = 200;
 
@@ -124,7 +114,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Parsed frontmatter value → stored list. Not an array → `undefined` (MISSING); invalid items
+ * Parsed frontmatter value → stored list. Not an array → `undefined` (no own list); invalid items
  * are dropped one by one (the list stays STORED); texts are re-sanitized.
  */
 export function parseStoredSuggestions(value: unknown): StoredSuggestion[] | undefined {
@@ -206,62 +196,13 @@ export function removeSuggestionsLine(fileText: string): string {
 /** A node of a chain as far as suggestions are concerned (top-level first). */
 export interface SuggestionChainNode {
   id: string;
+  /** The node's question (the fallback's "asked below the list's node" filter). */
+  user: string;
   suggestions?: StoredSuggestion[];
 }
 
 /** Keys of the live children's questions, per target node id. */
 export type UsedKeysByTarget = ReadonlyMap<string, ReadonlySet<string>>;
-
-/**
- * Distinct node ids the stored items of the chain's LAST node can point at (own → that node,
- * inherited → the ancestor `up` levels above). These are the targets whose children decide
- * "used". `[]` when the last node's list is missing.
- */
-export function suggestionTargets(chain: readonly SuggestionChainNode[]): string[] {
-  const last = chain.at(-1);
-  if (!last?.suggestions) return [];
-  const targets = new Set<string>();
-  for (const item of last.suggestions) {
-    const owner = chain[chain.length - 1 - item.up];
-    if (owner && item.up < chain.length) targets.add(owner.id);
-  }
-  return [...targets];
-}
-
-/**
- * Resolution on read for the chain's LAST node V: own items target V, inherited items target
- * the ancestor they point at and are kept only while that ancestor still OWNS the same text;
- * deduped by key (first wins), "used" items dropped, capped. `'missing'` when V has no list.
- */
-export function resolveSuggestions(
-  chain: readonly SuggestionChainNode[],
-  usedKeysByTarget: UsedKeysByTarget,
-): Suggestion[] | 'missing' {
-  const viewed = chain.at(-1);
-  if (!viewed || viewed.suggestions === undefined) return 'missing';
-  const resolved: Suggestion[] = [];
-  const seen = new Set<string>();
-  for (const item of viewed.suggestions) {
-    const key = suggestionKey(item.text);
-    let target = viewed.id;
-    if (item.up > 0) {
-      if (item.up >= chain.length) continue;
-      const owner = chain[chain.length - 1 - item.up];
-      if (!owner?.suggestions) continue;
-      const owned = owner.suggestions.some(
-        (own) => own.up === 0 && suggestionKey(own.text) === key,
-      );
-      if (!owned) continue;
-      target = owner.id;
-    }
-    if (seen.has(key)) continue;
-    seen.add(key);
-    if (usedKeysByTarget.get(target)?.has(key)) continue;
-    resolved.push({ text: item.text, target, up: item.up });
-    if (resolved.length >= MAX_SUGGESTIONS) break;
-  }
-  return resolved;
-}
 
 /** Index of the nearest node of `chain` (from the end) with a STORED list; `-1` when none. */
 export function nearestStoredIndex(chain: readonly SuggestionChainNode[]): number {
@@ -272,33 +213,88 @@ export function nearestStoredIndex(chain: readonly SuggestionChainNode[]): numbe
 }
 
 /**
- * Inheritance candidates for a node whose ancestors are `chain` (top-level first): the
- * resolved list of the nearest ancestor with a stored list (missing ones are skipped; a stored
- * empty one stops inheritance), minus questions already asked along the chain. Each candidate
- * points at the ancestor that originally offered it.
+ * Distinct node ids the EFFECTIVE list of the chain's last node can point at: the list of
+ * `nearestStoredIndex(chain)` (own → that node, inherited → the ancestor `up` levels above
+ * it). These are the targets whose children decide "used". `[]` when no node has a list.
  */
-export function pickCandidates(
-  chain: readonly SuggestionChainNode[],
-  usedKeysByTarget: UsedKeysByTarget,
-  askedKeys: ReadonlySet<string>,
-): SuggestionCandidate[] {
-  const nearest = nearestStoredIndex(chain);
-  if (nearest === -1) return [];
-  const resolved = resolveSuggestions(chain.slice(0, nearest + 1), usedKeysByTarget);
-  if (resolved === 'missing') return [];
-  return resolved
-    .filter((item) => !askedKeys.has(suggestionKey(item.text)))
-    .map((item) => ({ text: item.text, source: item.target, origin: nearest - item.up }));
+export function suggestionTargets(chain: readonly SuggestionChainNode[]): string[] {
+  const stored = nearestStoredIndex(chain);
+  const list = chain[stored]?.suggestions;
+  if (!list) return [];
+  const targets = new Set<string>();
+  for (const item of list) {
+    if (item.up > stored) continue;
+    const owner = chain[stored - item.up];
+    if (owner) targets.add(owner.id);
+  }
+  return [...targets];
 }
 
 /**
- * Finalization after generation: picks (model order) → stored items. Keeps reference a
- * candidate (text verbatim, `up` relative to the new node); new texts are sanitized and become
- * keeps when they equal a candidate. Asked questions and duplicates are dropped; own items
- * come first, then inherited ones; capped at MAX_SUGGESTIONS. May return `[]`.
+ * Resolution on read for the chain's LAST node V: its own stored list, or (none) the list of its
+ * nearest stored ancestor S with `up` shifted by the distance. Own items target S, inherited
+ * items target the ancestor they point at and are kept only while it still OWNS the same text;
+ * deduped by key (first wins), "used" items dropped, and with the fallback also the questions
+ * asked below S. `[]` when no node of the chain has a list. Not capped.
+ */
+export function resolveSuggestions(
+  chain: readonly SuggestionChainNode[],
+  usedKeysByTarget: UsedKeysByTarget,
+): Suggestion[] {
+  const last = chain.length - 1;
+  const stored = nearestStoredIndex(chain);
+  const list = chain[stored];
+  if (!list?.suggestions) return [];
+  const shift = last - stored;
+  const below = new Set(chain.slice(stored + 1).map((node) => suggestionKey(node.user)));
+  const resolved: Suggestion[] = [];
+  const seen = new Set<string>();
+  for (const item of list.suggestions) {
+    const key = suggestionKey(item.text);
+    let target = list.id;
+    if (item.up > 0) {
+      if (item.up > stored) continue;
+      const owner = chain[stored - item.up];
+      if (!owner?.suggestions) continue;
+      const owned = owner.suggestions.some(
+        (own) => own.up === 0 && suggestionKey(own.text) === key,
+      );
+      if (!owned) continue;
+      target = owner.id;
+    }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (usedKeysByTarget.get(target)?.has(key)) continue;
+    if (shift > 0 && below.has(key)) continue;
+    resolved.push({ text: item.text, target, up: item.up + shift });
+  }
+  return resolved;
+}
+
+/**
+ * Open suggestions for a new node under the chain's last node (`ancestors`, top-level first):
+ * what the parent shows (`resolveSuggestions`, fallback included) minus questions already asked
+ * (`askedKeys`). Each candidate points at the ancestor that owns the text. Not capped.
+ */
+export function pickCandidates(
+  ancestors: readonly SuggestionChainNode[],
+  usedKeysByTarget: UsedKeysByTarget,
+  askedKeys: ReadonlySet<string>,
+): SuggestionCandidate[] {
+  const last = ancestors.length - 1;
+  return resolveSuggestions(ancestors, usedKeysByTarget)
+    .filter((item) => !askedKeys.has(suggestionKey(item.text)))
+    .map((item) => ({ text: item.text, source: item.target, origin: last - item.up }));
+}
+
+/**
+ * Finalization at save: the block's raw item texts (block order) → stored items. A text equal
+ * (by key) to a candidate is a keep (candidate text verbatim, `up` relative to the new node);
+ * any other text is a new own item. Empty texts, asked questions and duplicates are dropped;
+ * own items come first, then inherited ones. Not capped; may return `[]`.
  */
 export function finalizeSuggestions(
-  picks: readonly SuggestPick[],
+  texts: readonly string[],
   candidates: readonly SuggestionCandidate[],
   ctx: { depth: number; askedKeys: ReadonlySet<string> },
 ): StoredSuggestion[] {
@@ -307,25 +303,18 @@ export function finalizeSuggestions(
     const key = suggestionKey(candidate.text);
     if (!candidateByKey.has(key)) candidateByKey.set(key, candidate);
   }
-  const fromCandidate = (candidate: SuggestionCandidate): StoredSuggestion | undefined => {
-    const up = ctx.depth - candidate.origin;
-    return up >= 1 ? { text: candidate.text, up } : undefined;
-  };
   const items: StoredSuggestion[] = [];
   const seen = new Set<string>();
-  for (const pick of picks as readonly unknown[]) {
-    if (!isRecord(pick)) continue;
-    let item: StoredSuggestion | undefined;
-    if (typeof pick.text === 'string') {
-      const text = sanitizeSuggestionText(pick.text);
-      if (text === null) continue;
-      const candidate = candidateByKey.get(suggestionKey(text));
-      item = candidate ? fromCandidate(candidate) : { text, up: 0 };
-    } else if (typeof pick.keep === 'number' && Number.isInteger(pick.keep)) {
-      const candidate = candidates[pick.keep];
-      item = candidate ? fromCandidate(candidate) : undefined;
+  for (const raw of texts) {
+    const text = sanitizeSuggestionText(raw);
+    if (text === null) continue;
+    const candidate = candidateByKey.get(suggestionKey(text));
+    let item: StoredSuggestion = { text, up: 0 };
+    if (candidate) {
+      const up = ctx.depth - candidate.origin;
+      if (up < 1) continue;
+      item = { text: candidate.text, up };
     }
-    if (!item) continue;
     const key = suggestionKey(item.text);
     if (ctx.askedKeys.has(key) || seen.has(key)) continue;
     seen.add(key);
@@ -333,5 +322,5 @@ export function finalizeSuggestions(
   }
   const own = items.filter((item) => item.up === 0);
   const inherited = items.filter((item) => item.up > 0);
-  return [...own, ...inherited].slice(0, MAX_SUGGESTIONS);
+  return [...own, ...inherited];
 }

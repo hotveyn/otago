@@ -5,7 +5,8 @@
  *
  * Suggestions (`suggestions: <json>`, one line) are read from the RAW value of their line and
  * written only through `setSuggestionsLine` of the server's pure module, so the format is the
- * server's byte for byte (contract `suggested-prompts/contracts/node-file.ts`).
+ * server's byte for byte (contract `inline-suggestions/contracts/node-file.ts`). They are
+ * written only at node creation; no later write exists.
  */
 import {
   parseStoredSuggestions,
@@ -25,7 +26,7 @@ export interface NodeFile {
   model: string;
   user: string;
   assistant: string;
-  /** `undefined` = MISSING (key absent or not a JSON array); array = STORED (maybe empty). */
+  /** `undefined` = no own list (key absent or not a JSON array); array = STORED (maybe empty). */
   suggestions?: StoredSuggestion[];
 }
 
@@ -128,7 +129,7 @@ export function parseNodeFile(text: string): NodeFile {
     user: trimBlankLines(body.slice(userIndex + USER_MARKER.length, assistantIndex)),
     assistant: trimBlankLines(body.slice(assistantIndex + ASSISTANT_MARKER.length)),
   };
-  // Only the write form is read: a block list, `null`, a quoted string or bad JSON → MISSING.
+  // Only the write form is read: a block list, `null`, a quoted string or bad JSON → no own list.
   const value = raw[SUGGESTIONS_KEY];
   const suggestions = value === undefined ? undefined : parseStoredSuggestions(tryJson(value));
   if (suggestions) node.suggestions = suggestions;
@@ -140,9 +141,4 @@ export function serializeNodeFile(node: NodeFile): string {
   const body = `${USER_MARKER}\n${node.user}\n\n${ASSISTANT_MARKER}\n${node.assistant}\n`;
   const text = serializeFrontmatter({ created: node.created, model: yamlString(node.model) }, body);
   return Array.isArray(node.suggestions) ? setSuggestionsLine(text, node.suggestions) : text;
-}
-
-/** Later write: splice the suggestions line into a raw node.md, every other byte kept. */
-export function spliceSuggestions(text: string, items: readonly StoredSuggestion[]): string {
-  return setSuggestionsLine(text, items);
 }
