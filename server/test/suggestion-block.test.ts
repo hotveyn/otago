@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  parseBlockItem,
   SUGGESTIONS_MARKER,
   SuggestionBlockFilter,
   splitSuggestionBlock,
   suggestionBlock,
+  WHOLE_ITEM_PREFIX,
+  wholeItem,
 } from '../src/storage/index.js';
 
 const M = SUGGESTIONS_MARKER;
@@ -123,6 +126,15 @@ describe('splitSuggestionBlock', () => {
   });
 });
 
+/** A map answer ending in a block with every part and a whole item. */
+const MAP_ANSWER = 'The topic is big. Map:\n\n- Ownership\n- Borrowing\n- Slices';
+const MAP_TEXT = `${MAP_ANSWER}${suggestionBlock([
+  'Explain ownership',
+  'Explain borrowing',
+  'Explain slices',
+  wholeItem('Explain the whole chapter in one answer'),
+])}`;
+
 /** Every text the filter must handle, with block, without, rejected, fenced, two blocks. */
 const TEXTS = [
   'Plain answer without any marker.\nSecond line.',
@@ -135,6 +147,7 @@ const TEXTS = [
   `Intro\n${M}\n- a\n${M}\n- b`,
   `<b>bold</b> line\n<!-- a comment -->\n  <!-- otago:suggestions --> trailing\nend`,
   `Ends with an incomplete marker <!-- otago:sugg`,
+  MAP_TEXT,
 ];
 
 function expectedOutput(text: string): string {
@@ -249,5 +262,68 @@ describe('SuggestionBlockFilter', () => {
     const partial = new SuggestionBlockFilter();
     expect(partial.push('A\n<!-- otago:sugg')).toBe('A\n');
     expect(partial.end()).toBe('<!-- otago:sugg');
+  });
+});
+
+describe('whole item', () => {
+  it('parseBlockItem: plain text stays a regular item', () => {
+    expect(parseBlockItem('Explain borrowing')).toEqual({ text: 'Explain borrowing' });
+    expect(parseBlockItem('')).toEqual({ text: '' });
+  });
+
+  it('parseBlockItem: the prefix makes a whole item', () => {
+    expect(parseBlockItem(`${WHOLE_ITEM_PREFIX} X`)).toEqual({ text: 'X', kind: 'whole' });
+    expect(parseBlockItem(wholeItem('Объясни главу 4 целиком'))).toEqual({
+      text: 'Объясни главу 4 целиком',
+      kind: 'whole',
+    });
+  });
+
+  it('parseBlockItem: spacing variants are accepted', () => {
+    for (const raw of [
+      '<!--otago:whole-->X',
+      '<!--\totago:whole\t-->\tX',
+      '<!--  otago:whole -->   X',
+    ]) {
+      expect(parseBlockItem(raw), raw).toEqual({ text: 'X', kind: 'whole' });
+    }
+  });
+
+  it('parseBlockItem: another case or a prefix in the middle stays plain', () => {
+    for (const raw of [
+      '<!-- otago:Whole --> X',
+      `Explain ${WHOLE_ITEM_PREFIX} X`,
+      ' <!-- otago:whole --> X',
+    ]) {
+      expect(parseBlockItem(raw), raw).toEqual({ text: raw });
+    }
+  });
+
+  it('parseBlockItem: the prefix alone is an empty whole item', () => {
+    expect(parseBlockItem(WHOLE_ITEM_PREFIX)).toEqual({ text: '', kind: 'whole' });
+    expect(parseBlockItem(`${WHOLE_ITEM_PREFIX}  `)).toEqual({ text: '', kind: 'whole' });
+  });
+
+  it('wholeItem + suggestionBlock round-trip through splitSuggestionBlock', () => {
+    expect(wholeItem('W')).toBe(`${WHOLE_ITEM_PREFIX} W`);
+    const answer = 'Answer with a list:\n\n- one\n- two';
+    expect(splitSuggestionBlock(answer + suggestionBlock(['A', 'B', wholeItem('W')]))).toEqual({
+      answer,
+      items: ['A', 'B', '<!-- otago:whole --> W'],
+      rejected: false,
+    });
+  });
+
+  it('the filter withholds a block with a whole item for every chunking', () => {
+    for (const chunks of chunkings(MAP_TEXT)) {
+      const { outputs, final } = runFilter(chunks);
+      expect(final, JSON.stringify(chunks)).toBe(`${MAP_ANSWER}\n\n`);
+      for (const output of outputs) expect(output).not.toContain('otago:whole');
+    }
+  });
+
+  it('a standalone whole line inside a block rejects the block', () => {
+    const text = `Map\n${M}\n- A\n- B\n${WHOLE_ITEM_PREFIX} W`;
+    expect(splitSuggestionBlock(text)).toEqual({ answer: text, rejected: true });
   });
 });

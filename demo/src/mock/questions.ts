@@ -6,7 +6,9 @@
  * The registry lives in memory: a page reload loses running questions (a "server restart").
  * The simulated answer may end with a suggestion block (simulator from `suggestions.ts`),
  * withheld from chunks by `SuggestionBlockFilter` and split off at the commit; contract
- * `.claude/features/inline-suggestions/contracts/agent.ts` "Runner".
+ * `.claude/features/inline-suggestions/contracts/agent.ts` "Runner". A block that keeps an
+ * "explain it whole" item makes the answer a map only (`mapAnswer`); contract
+ * `.claude/features/topic-split-v2/contracts/agent.ts` "Big topics".
  */
 import {
   SuggestionBlockFilter,
@@ -36,13 +38,14 @@ import type {
   TreeBusyDetails,
   UserFileInfo,
 } from '../../../web/src/api/types';
+import { randomUuid } from '../../../web/src/lib/uuid';
 import { type CiteRef, citeRefOf, citeUnitOf, withCitations } from './cite';
 import { badRequest, conflict, notFound, payloadTooLarge } from './errors';
 import { DEMO_MAX_FILE_BYTES, fileInfoOf, MAX_MESSAGE_FILES, userFileNameOf } from './files';
 import type { TreeLocks } from './locks';
 import { loremAnswer, streamTokens } from './lorem';
 import { isSameOrDescendant, toNodeName, USER_FILES_DIR, uniqueFileName } from './names';
-import type { BlockSimulator } from './suggestions';
+import { type BlockSimulator, mapAnswer, splitParts } from './suggestions';
 import type { StoredFile, TreeStore } from './trees';
 
 export type Schedule = (fn: () => void, ms: number) => () => void;
@@ -128,7 +131,7 @@ export class Questions {
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
     this.schedule = options.schedule ?? defaultSchedule;
-    this.uuid = options.uuid ?? (() => crypto.randomUUID());
+    this.uuid = options.uuid ?? randomUuid;
     this.instance = this.uuid();
   }
 
@@ -359,8 +362,9 @@ export class Questions {
     const { id, attempt, text, tree, parentId } = entry.info;
     // The parent's open suggestions, read while the shared lock holds the chain in place.
     const state = this.suggestionState(tree, parentId, text);
-    const answer = withCitations(loremAnswer(this.random), this.citeRefs(entry), this.random);
-    // Asked after the answer, so the answer's random sequence is unchanged.
+    const lorem = loremAnswer(this.random);
+    // Asked after the Lorem body (its random sequence is unchanged) and before the body is
+    // chosen: a real model decides to split before it writes.
     const texts = this.suggest({
       treeId: tree,
       parentId,
@@ -368,6 +372,18 @@ export class Questions {
       openSuggestions: state.candidates.map((candidate) => candidate.text),
       attempt,
     });
+    // Classification only: a finalized list that keeps a whole item makes a map answer. The
+    // commit finalizes the split of `raw` again, the single source of what is stored.
+    const parts =
+      texts &&
+      splitParts(
+        finalizeSuggestions(texts, state.candidates, {
+          depth: state.depth,
+          askedKeys: state.askedKeys,
+        }),
+      );
+    const body = parts ? mapAnswer(parts) : lorem;
+    const answer = withCitations(body, this.citeRefs(entry), this.random);
     const raw = answer + (texts ? suggestionBlock(texts) : '');
     const tokens = streamTokens(raw);
     // The block never reaches chunks (nor `live.answer`, which snapshots send).

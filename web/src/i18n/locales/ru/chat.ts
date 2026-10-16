@@ -123,6 +123,8 @@ export const chat = {
     label: 'Предлагаемые вопросы',
     from: 'из <name>{{name}}</name>',
     askUnder: 'Будет задан в «{{target}}»',
+    askAtRoot: 'Будет задан как новый вопрос верхнего уровня',
+    whole: 'вся тема',
   },
   citations: {
     heading: 'Источники',

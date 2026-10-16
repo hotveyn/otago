@@ -402,7 +402,10 @@ export class TreeStore {
     return { id: newId, name, renamed };
   }
 
-  // --- Suggestions (contract `inline-suggestions`) ---------------------------------------
+  // --- Suggestions (contracts `inline-suggestions`, `topic-split-v2`) -----------------------
+  // A `whole` item targets the map's parent (`''` at top level), is never inherited and never
+  // a candidate: all decided by the server's pure `suggestionTargets` / `resolveSuggestions` /
+  // `pickCandidates`.
 
   /**
    * `GET /trees/:tree/suggestions?node=`: the resolved list with the ancestor fallback; always

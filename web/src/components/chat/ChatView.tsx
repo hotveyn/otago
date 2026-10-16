@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ApiError } from '../../api/client';
 import { useChain } from '../../api/queries';
-import type { ChainNode, TreeDetail } from '../../api/types';
+import type { ChainNode, QuestionContext, TreeDetail } from '../../api/types';
 import { describeError } from '../../lib/chat-errors';
 import { initialScrollAnchor, nextScrollAnchor } from '../../lib/chat-scroll';
 import { stashKeyOf } from '../../lib/draft-stash';
@@ -29,11 +29,20 @@ interface ChatViewProps {
    * `null` while it is not possible.
    */
   onAskAside: ((text: string, anchor: string) => void) | null;
+  /** Move a panel to `parentId` (a "whole" suggestion click). */
+  onMoveFocus: (context: QuestionContext, parentId: string) => void;
 }
 
 const NO_MESSAGES: ChainNode[] = [];
 
-export function ChatView({ tree, currentId, question, onSelectNode, onAskAside }: ChatViewProps) {
+export function ChatView({
+  tree,
+  currentId,
+  question,
+  onSelectNode,
+  onAskAside,
+  onMoveFocus,
+}: ChatViewProps) {
   const { t } = useTranslation(['chat', 'common']);
   const chain = useChain(tree.id, currentId);
   const scroller = useRef<HTMLDivElement>(null);
@@ -89,6 +98,7 @@ export function ChatView({ tree, currentId, question, onSelectNode, onAskAside }
     stashKey,
     models: composer.models,
     show: question === null && view === null && messages.at(-1)?.id === currentId && !chain.error,
+    onMoveFocus,
   });
 
   return (

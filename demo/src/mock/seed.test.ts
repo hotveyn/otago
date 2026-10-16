@@ -4,6 +4,7 @@ import {
   splitSuggestionBlock,
 } from '../../../server/src/storage/suggestion-block';
 import {
+  MIN_SPLIT_PARTS,
   sanitizeSuggestionText,
   setSuggestionsLine,
   suggestionKey,
@@ -163,10 +164,18 @@ describe('seed trees', () => {
       expect(setSuggestionsLine(raw, stored ?? []), path).toBe(raw);
       const items = stored ?? [];
       for (const item of items) expect(sanitizeSuggestionText(item.text), path).toBe(item.text);
-      const firstInherited = items.findIndex((item) => item.up > 0);
+      // Items with a kind: only `whole`, at most one, last, `up: 1`.
+      const special = items.filter((item) => item.kind !== undefined);
+      expect(special.length, path).toBeLessThanOrEqual(1);
+      for (const item of special) {
+        expect(item, path).toMatchObject({ kind: 'whole', up: 1 });
+        expect(items.at(-1), path).toBe(item);
+      }
+      const regular = items.filter((item) => item.kind === undefined);
+      const firstInherited = regular.findIndex((item) => item.up > 0);
       if (firstInherited !== -1) {
         expect(
-          items.slice(firstInherited).every((item) => item.up > 0),
+          regular.slice(firstInherited).every((item) => item.up > 0),
           path,
         ).toBe(true);
       }
@@ -180,7 +189,7 @@ describe('seed trees', () => {
         const chain = demo.trees.suggestionChain(tree.id, id);
         const node = chain.at(-1);
         for (const item of node?.suggestions ?? []) {
-          if (item.up === 0) continue;
+          if (item.up === 0 || item.kind !== undefined) continue;
           const where = `${tree.id}/${id}: ${item.text}`;
           expect(item.up, where).toBeLessThan(chain.length);
           const owner = chain[chain.length - 1 - item.up];
@@ -225,6 +234,49 @@ describe('seed trees', () => {
     ]);
   });
 
+  it('showcases a map node: parts, an explain-it-whole item to the parent, a part child without it', () => {
+    let maps = 0;
+    for (const tree of trees) {
+      for (const id of flatten(demo.trees.hierarchy(tree.id))) {
+        const stored = demo.trees.suggestionChain(tree.id, id).at(-1)?.suggestions;
+        const view = demo.trees.suggestionsView(tree.id, id).suggestions;
+        const storesWhole = stored?.some((item) => item.kind === 'whole') ?? false;
+        const shownWhole = view.filter((item) => item.kind !== undefined);
+        if (!storesWhole) {
+          expect(shownWhole, `${tree.id}/${id}`).toEqual([]);
+          continue;
+        }
+        maps++;
+        const parts = (stored ?? []).filter((item) => item.up === 0 && item.kind === undefined);
+        expect(parts.length, id).toBeGreaterThanOrEqual(MIN_SPLIT_PARTS);
+        const parent = id.includes('/') ? id.slice(0, id.lastIndexOf('/')) : '';
+        expect(view.at(-1), id).toMatchObject({ kind: 'whole', up: 1, target: parent });
+        expect(shownWhole, id).toHaveLength(1);
+      }
+    }
+    expect(maps).toBeGreaterThanOrEqual(1);
+
+    const tree = 'rust-ownership';
+    const second = 'Explain the second part of chapter 4: references and borrowing';
+    const third = 'Explain the third part of chapter 4: mutable and dangling references';
+    expect(demo.trees.suggestionsView(tree, 'chapter-4').suggestions).toEqual([
+      { text: second, target: 'chapter-4', up: 0 },
+      { text: third, target: 'chapter-4', up: 0 },
+      {
+        text: 'Explain all of chapter 4 in one answer, without splitting it',
+        target: '',
+        up: 1,
+        kind: 'whole',
+      },
+    ]);
+    const part = 'chapter-4/what-ownership-is';
+    expect(demo.trees.suggestionChain(tree, part).at(-1)?.suggestions).toBeUndefined();
+    expect(demo.trees.suggestionsView(tree, part).suggestions).toEqual([
+      { text: second, target: 'chapter-4', up: 1 },
+      { text: third, target: 'chapter-4', up: 1 },
+    ]);
+  });
+
   it('a node without a list shows its nearest stored ancestor list, one level further up', () => {
     const tree = 'rust-ownership';
     const parent = demo.trees.suggestionsView(tree, 'what-is-ownership/borrowing-rules');
@@ -252,6 +304,7 @@ describe('seed trees', () => {
     for (const [path, raw] of nodeFiles) {
       const { assistant } = parseNodeFile(raw);
       expect(assistant, path).not.toContain(SUGGESTIONS_MARKER);
+      expect(assistant, path).not.toContain('otago:whole');
       expect(splitSuggestionBlock(assistant).items, path).toBeUndefined();
     }
   });

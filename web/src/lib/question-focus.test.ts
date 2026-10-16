@@ -6,9 +6,10 @@ import {
   focusedIn,
   openPendingTarget,
   reconcileFocus,
+  sendFocusTarget,
 } from './question-focus';
 import { initialQuestionsState, type OutboxEntry, type QuestionsState } from './questions';
-import { mergeUrlState, type UrlState } from './url-state';
+import { isValidHead, mergeUrlState, type UrlState } from './url-state';
 
 const side = (anchor: string): QuestionContext => ({ kind: 'side', anchor });
 
@@ -267,5 +268,128 @@ describe('askAsideTarget and focusedIn', () => {
     expect(focusedIn(current, 'm')).toBe('main');
     expect(focusedIn(current, 's')).toBe('side');
     expect(focusedIn(current, 'x')).toBeNull();
+  });
+});
+
+describe('sendFocusTarget', () => {
+  const MAIN: QuestionContext = { kind: 'main' };
+
+  /** Applying the patch makes the function return null. */
+  function applied(current: UrlState, context: QuestionContext, parentId: string): UrlState {
+    const patch = sendFocusTarget(current, context, parentId);
+    expect(patch).not.toBeNull();
+    const next = mergeUrlState(current, patch ?? {});
+    expect(sendFocusTarget(next, context, parentId)).toBeNull();
+    return next;
+  }
+
+  describe('main', () => {
+    it('moves the main panel to the parent with no question', () => {
+      const current = url({ node: 'основы/карта' });
+      expect(sendFocusTarget(current, MAIN, 'основы')).toEqual({ node: 'основы', question: null });
+      expect(sendFocusTarget(current, MAIN, '')).toEqual({ node: '', question: null });
+    });
+
+    it('is null when the panel already targets the parent with no question', () => {
+      expect(sendFocusTarget(url({ node: 'основы' }), MAIN, 'основы')).toBeNull();
+    });
+
+    it('drops a focused question at the same node', () => {
+      expect(sendFocusTarget(url({ question: 'x' }), MAIN, 'основы')).toEqual({
+        node: 'основы',
+        question: null,
+      });
+    });
+
+    it('is idempotent', () => {
+      applied(url({ node: 'основы/карта' }), MAIN, 'основы');
+      applied(url({ node: 'карта' }), MAIN, '');
+    });
+  });
+
+  describe('side', () => {
+    const SIDE = side('а');
+    const current = url({
+      node: 'х',
+      question: 'm',
+      side: { anchor: 'а', head: 'а/б/карта', question: null },
+    });
+
+    it('moves the head to the parent, or to null at the anchor', () => {
+      expect(sendFocusTarget(current, SIDE, 'а/б')).toEqual({
+        side: { anchor: 'а', head: 'а/б', question: null },
+      });
+      expect(sendFocusTarget(current, SIDE, 'а')).toEqual({
+        side: { anchor: 'а', head: null, question: null },
+      });
+    });
+
+    it('is null for a parent above the anchor, another aside or no aside', () => {
+      expect(sendFocusTarget(current, SIDE, '')).toBeNull();
+      expect(sendFocusTarget(current, side('б'), 'б')).toBeNull();
+      expect(sendFocusTarget(url(), SIDE, 'а')).toBeNull();
+    });
+
+    it('leaves the main panel untouched and is idempotent', () => {
+      const next = applied(current, SIDE, 'а/б');
+      expect(next.node).toBe('х');
+      expect(next.question).toBe('m');
+      applied(current, SIDE, 'а');
+    });
+  });
+
+  describe('composition with acceptedFocus and reconcileFocus', () => {
+    it('main: move, focus on the 202, follow to the saved node', () => {
+      const url0 = url({ node: 'основы/карта' });
+      const url1 = mergeUrlState(url0, sendFocusTarget(url0, MAIN, 'основы') ?? {});
+      const focus = acceptedFocus(url1, running('a', { parentId: 'основы' }));
+      expect(focus).toEqual({ question: 'a' });
+      const url2 = mergeUrlState(url1, focus ?? {});
+      expect(reconcileFocus(url2, state([done('a')], { acked: { a: true } }))).toEqual({
+        node: 'основы/новый',
+        question: null,
+      });
+    });
+
+    it('main, root: the same for a top-level map', () => {
+      const url0 = url({ node: 'карта' });
+      const url1 = mergeUrlState(url0, sendFocusTarget(url0, MAIN, '') ?? {});
+      const focus = acceptedFocus(url1, running('a', { parentId: '' }));
+      expect(focus).toEqual({ question: 'a' });
+      const url2 = mergeUrlState(url1, focus ?? {});
+      const saved = state([done('a', { parentId: '', nodeId: 'новый' })], { acked: { a: true } });
+      expect(reconcileFocus(url2, saved)).toEqual({ node: 'новый', question: null });
+    });
+
+    it('side: move, focus on the 202, follow to the saved node as the head', () => {
+      const context = side('а');
+      const url0 = url({ side: { anchor: 'а', head: 'а/б/карта', question: null } });
+      const url1 = mergeUrlState(url0, sendFocusTarget(url0, context, 'а/б') ?? {});
+      const focus = acceptedFocus(url1, running('a', { parentId: 'а/б', context }));
+      expect(focus).toEqual({ side: { anchor: 'а', head: 'а/б', question: 'a' } });
+      const url2 = mergeUrlState(url1, focus ?? {});
+      const saved = state([done('a', { parentId: 'а/б', context, nodeId: 'а/б/новый' })], {
+        acked: { a: true },
+      });
+      expect(isValidHead('а/б/новый', 'а')).toBe(true);
+      expect(reconcileFocus(url2, saved)).toEqual({
+        side: { anchor: 'а', head: 'а/б/новый', question: null },
+      });
+    });
+
+    it('side: a parent equal to the anchor (head null) still gets the 202 focus', () => {
+      const context = side('а');
+      const url0 = url({ side: { anchor: 'а', head: 'а/карта', question: null } });
+      const url1 = mergeUrlState(url0, sendFocusTarget(url0, context, 'а') ?? {});
+      expect(url1.side).toEqual({ anchor: 'а', head: null, question: null });
+      expect(acceptedFocus(url1, running('a', { parentId: 'а', context }))).toEqual({
+        side: { anchor: 'а', head: null, question: 'a' },
+      });
+    });
+
+    it('without the move the 202 does not focus (regression guard)', () => {
+      const url0 = url({ node: 'основы/карта' });
+      expect(acceptedFocus(url0, running('a', { parentId: 'основы' }))).toBeNull();
+    });
   });
 });

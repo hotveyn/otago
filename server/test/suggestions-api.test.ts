@@ -60,6 +60,48 @@ describe('suggestions API', () => {
     ctx.app.inject({ method: 'POST', url: `/api/trees/rust/nodes/${action}`, payload });
 
   describe('GET', () => {
+    it('a top-level map: the whole item targets the root; unknown kinds are not sent', async () => {
+      await setup();
+      await writeNode('map', 'Chapter?', [
+        { text: 'A', up: 0 },
+        { text: 'B', up: 0 },
+        { text: 'W', up: 1, kind: 'whole' },
+      ]);
+      const dir = path.join(treeDir(), 'odd');
+      await mkdir(dir, { recursive: true });
+      await writeFile(
+        path.join(dir, 'node.md'),
+        [
+          '---',
+          'created: 2026-10-15T09:00:00.000Z',
+          'model: m',
+          'suggestions: [{"text":"A","up":0},{"text":"X","up":0,"kind":"extra"},{"text":"W","up":1,"kind":"whole"}]',
+          '---',
+          '<!-- otago:user -->',
+          'Odd?',
+          '',
+          '<!-- otago:assistant -->',
+          'Odd answer.',
+          '',
+        ].join('\n'),
+      );
+      const res = await get('map');
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({
+        node: 'map',
+        state: 'ready',
+        suggestions: [
+          { text: 'A', target: 'map', up: 0 },
+          { text: 'B', target: 'map', up: 0 },
+          { text: 'W', target: '', up: 1, kind: 'whole' },
+        ],
+      });
+      expect((await get('odd')).json().suggestions).toEqual([
+        { text: 'A', target: 'odd', up: 0 },
+        { text: 'W', target: '', up: 1, kind: 'whole' },
+      ]);
+    });
+
     it('ready [] for a legacy node without stored ancestors and for a stored empty list', async () => {
       await setup();
       await writeNode('old', 'Q');

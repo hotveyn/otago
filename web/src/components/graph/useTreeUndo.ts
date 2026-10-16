@@ -16,6 +16,7 @@ import {
   runUndo,
   saveHistory,
 } from '../../lib/undo-history';
+import { randomUuid } from '../../lib/uuid';
 
 /** How long an undo failure stays on screen. */
 const TOAST_MS = 6000;
@@ -86,7 +87,7 @@ export function useTreeUndo({ treeId, busy, blocked, onApplied, onBusy }: UseTre
   const record = useCallback(
     (update: (list: HistoryEntry[], now: string, id: string) => HistoryEntry[]) => {
       const forTree = treeRef.current;
-      const next = update(entriesRef.current, new Date().toISOString(), crypto.randomUUID());
+      const next = update(entriesRef.current, new Date().toISOString(), randomUuid());
       if (next !== entriesRef.current) commit(forTree, next);
     },
     [commit],

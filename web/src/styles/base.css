@@ -1331,16 +1331,20 @@ select:focus {
 
 .suggestions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6.4px;
+  flex-direction: column;
+  gap: 4.8px;
   margin-top: 12.8px;
 }
 
+/* Same card look as `.attachment-card`: full width, square corners, soft border. */
 .suggestions .suggestion {
-  justify-content: flex-start;
-  max-width: 100%;
-  border-radius: 9.6px;
-  padding: 3.2px 9.6px;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  border-color: var(--line);
+  padding: 4.8px 8px;
+  font-size: 12px;
   text-align: start;
   white-space: normal;
   color: var(--text-soft);
@@ -1352,7 +1356,14 @@ select:focus {
   color: var(--accent);
 }
 
-.suggestion-source {
+.suggestions .suggestion-whole {
+  border-style: dashed;
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.suggestion-source,
+.suggestion-kind {
   flex-shrink: 0;
   font-family: var(--mono);
   font-size: 9.6px;

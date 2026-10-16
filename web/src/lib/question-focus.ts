@@ -5,6 +5,7 @@
 import type { QuestionContext, QuestionInfo } from '../api/types';
 import type { QuestionsState } from './questions';
 import { sideParent } from './side-chat';
+import { isSameOrDescendant } from './tree';
 import { isValidHead, openSide, type SideChatState, type UrlState } from './url-state';
 
 const headFor = (parentId: string, anchor: string): string | null =>
@@ -77,6 +78,30 @@ export function acceptedFocus(url: UrlState, question: QuestionInfo): Partial<Ur
   if (!side || side.anchor !== context.anchor || side.question !== null) return null;
   if (sideParent(side) !== question.parentId) return null;
   return { side: { ...side, question: question.id } };
+}
+
+/**
+ * A send to `parentId` from the panel of `context` that should be followed there (the "explain
+ * it whole" suggestion): the patch that makes that panel target `parentId` with no focused
+ * question, so its outbox box shows at once and the 202 focus (`acceptedFocus`) applies.
+ * `null` = nothing to change, or no such panel (another aside, or a parent above the aside's
+ * anchor, which would break its context).
+ */
+export function sendFocusTarget(
+  url: UrlState,
+  context: QuestionContext,
+  parentId: string,
+): Partial<UrlState> | null {
+  if (context.kind === 'main') {
+    if (url.node === parentId && url.question === null) return null;
+    return { node: parentId, question: null };
+  }
+  const side = url.side;
+  const anchor = context.anchor;
+  if (!side || side.anchor !== anchor || !isSameOrDescendant(parentId, anchor)) return null;
+  const head = headFor(parentId, anchor);
+  if (side.head === head && side.question === null) return null;
+  return { side: { anchor, head, question: null } };
 }
 
 function targetOf(

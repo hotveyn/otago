@@ -105,7 +105,12 @@ describe('format: suggestions', () => {
 
   it('drops invalid items, keeps the list stored and ignores unknown keys', () => {
     const value = JSON.stringify([
-      { text: 'Good', up: 0, kind: 'future' },
+      { text: 'Good', up: 0, extra: 'future' },
+      { text: 'F', up: 0, kind: 'future' },
+      { text: 'N', up: 0, kind: null },
+      { text: 'W0', up: 0, kind: 'whole' },
+      { text: 'W2', up: 2, kind: 'whole' },
+      { text: 'W', up: 1, kind: 'whole' },
       { text: '', up: 0 },
       { text: 'Neg', up: -1 },
       { text: 'Frac', up: 1.5 },
@@ -115,6 +120,7 @@ describe('format: suggestions', () => {
     ]);
     expect(parseNodeFile(withLine(`suggestions: ${value}`)).suggestions).toEqual([
       { text: 'Good', up: 0 },
+      { text: 'W', up: 1, kind: 'whole' },
       { text: 'Quoted', up: 1 },
     ]);
     expect(parseNodeFile(withLine('suggestions: [{"text":""}]')).suggestions).toEqual([]);
@@ -128,6 +134,18 @@ describe('format: suggestions', () => {
     const lines = text.split('\n');
     expect(lines[lines.indexOf('---', 1) - 1]).toBe('suggestions: [{"text":"Next?","up":0}]');
     expect(serializeNodeFile({ ...base, suggestions: [] })).toBe(withLine('suggestions: []'));
+  });
+
+  it("writes and reads a whole item in the server's form", () => {
+    const suggestions = [
+      { text: 'P', up: 0 },
+      { text: 'W', up: 1, kind: 'whole' as const },
+    ];
+    const text = serializeNodeFile({ ...base, suggestions });
+    expect(text).toBe(
+      withLine('suggestions: [{"text":"P","up":0},{"text":"W","up":1,"kind":"whole"}]'),
+    );
+    expect(parseNodeFile(text)).toEqual({ ...base, suggestions });
   });
 
   it('reads the server-written form (gray-matter frontmatter + spliced line)', () => {

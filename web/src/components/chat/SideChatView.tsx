@@ -35,6 +35,8 @@ interface SideChatViewProps {
   onPromote: () => void;
   /** Close the panel; a question in flight keeps answering in the background. */
   onClose: () => void;
+  /** Move a panel to `parentId` (a "whole" suggestion click). */
+  onMoveFocus: (context: QuestionContext, parentId: string) => void;
 }
 
 /** A "by the way" chat branching from `side.anchor`; the main chat's focus never moves. */
@@ -45,6 +47,7 @@ export function SideChatView({
   onSeedConsumed,
   onPromote,
   onClose,
+  onMoveFocus,
 }: SideChatViewProps) {
   const { t } = useTranslation(['chat', 'common']);
   const parentId = sideParent(side);
@@ -98,6 +101,7 @@ export function SideChatView({
       view === null &&
       messages.at(-1)?.id === side.head &&
       !chain.error,
+    onMoveFocus,
   });
 
   // An explicit close forgets the draft of this aside (switching asides keeps it).

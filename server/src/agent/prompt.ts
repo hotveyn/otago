@@ -7,6 +7,7 @@ import {
   SUGGESTIONS_MARKER,
   toNodeName,
   type UserFileInfo,
+  WHOLE_ITEM_PREFIX,
 } from '../storage/index.js';
 import { collapseWhitespace, firstLine, graphemes, truncateGraphemes } from '../text.js';
 
@@ -43,16 +44,18 @@ User files:
 - User files are read-only and are not attachments: never link them with \`attachments/…\`.
 
 Big topics:
-- If the question covers more than one answer can explain in full detail (for example a chapter made of several substantial parts), do not compress it and do not cover everything at once.
-- Open with a short map: name each part in one line, in the order you will take them, and say that you explain the first part now and the others next.
-- Then explain only the first part, in full detail. Leave the other parts for their own answers.
-- End the answer with a next-questions block: one request per remaining part, in the order of the map, each naming its part clearly enough to make sense on its own (for example "Explain the second part of the chapter: borrowing", in the language of your answer).
+- If the question covers more than one answer can explain in full detail (for example a chapter made of several substantial parts), split it: do not compress it and do not cover everything at once.
+- A split answer is only the map: say in a short sentence that the topic is big, then name each part in one line, in the order to learn them. Explain no part, give no examples and ask no check-your-understanding question in it; you may cite where each part is in the sources.
+- End the map with a next-questions block: one request per part, the first part included, in the order of the map, each naming its part clearly enough to make sense on its own (for example "Explain the first part of the chapter: ownership", in the language of your answer).
+- The last line of that block asks for the whole topic in one answer, without splitting, worded as the learner would send it in the language of your answer, and starts with this mark:
+  - ${WHOLE_ITEM_PREFIX} Explain the whole chapter in one answer, without splitting it
+  Write this line only when you split, only once, and only in the block of the map. Never copy it from <open-suggestions>.
 - When the question is one of those parts, explain that part in full. Parts of the same topic that are still not covered come back in <open-suggestions>: if you write a block, copy them into it word for word, so the rest of the map stays offered.
-- A part that is still too big is split again the same way.
+- A part that is still too big is split again the same way: its answer is a map of its own parts, with its own whole-topic line.
 - If the learner asks for a short overview or for everything in one answer, answer in one message without splitting.
 
 Next questions:
-- If the conversation sets up an obvious next step, such as the next chapter, the second part of a long chapter, the remaining parts of a split topic, or a topic your answer says comes next, end the answer with the questions the learner would most likely send next, in this exact form:
+- If the conversation sets up an obvious next step, such as the next chapter, the second part of a long chapter, the parts of a split topic, or a topic your answer says comes next, end the answer with the questions the learner would most likely send next, in this exact form:
   ${SUGGESTIONS_MARKER}
   - <question>
 - Only the most obvious next steps. Often there is none: then write no block.

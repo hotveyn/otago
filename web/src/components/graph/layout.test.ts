@@ -14,6 +14,17 @@ const a = node('a', '2026-01-01T00:00:00Z', [node('a/x', '2026-01-02T00:00:00Z')
 const b = node('b', '2026-01-03T00:00:00Z');
 const tree = [a, b];
 
+describe('layoutTree ranks', () => {
+  it('top-aligns siblings of different heights, so their edges share one bus', () => {
+    const long = node('реляционная-документоориентированная-модели', '2026-01-02T00:00:00Z');
+    const { nodes } = layoutTree('T', [a, long, b]);
+    const short = nodes.find((n) => n.id === 'b');
+    const tall = nodes.find((n) => n.id === long.id);
+    expect(tall?.height).toBeGreaterThan(short?.height ?? 0);
+    expect(tall?.position.y).toBe(short?.position.y);
+  });
+});
+
 describe('layoutTree ghost', () => {
   it('adds no ghost without a ghost parent', () => {
     const { nodes, edges } = layoutTree('T', tree);

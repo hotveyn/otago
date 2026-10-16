@@ -200,13 +200,23 @@ export function layoutTree(
   for (const edge of edges) graph.setEdge(edge.source, edge.target);
   layout(graph);
 
+  // Dagre centers boxes within a rank, so a multi-line box would start higher than its
+  // one-line siblings and get its own bus (see `treePath`). Top-align each rank instead.
+  // All boxes at one depth share a rank: every edge goes from depth d to d + 1.
+  const rankTop = new Map<number, number>();
+  for (const box of boxes) {
+    const { y, height } = graph.node(box.id);
+    const top = y - height / 2;
+    rankTop.set(box.depth, Math.min(rankTop.get(box.depth) ?? top, top));
+  }
+
   return {
     nodes: boxes.map((box) => {
-      const { x, y, width, height } = graph.node(box.id);
+      const { x, width, height } = graph.node(box.id);
       return {
         id: box.id,
         type: 'box',
-        position: { x: x - width / 2, y: y - height / 2 },
+        position: { x: x - width / 2, y: rankTop.get(box.depth) ?? 0 },
         width,
         height,
         draggable: !box.isRoot && !box.ghost && !box.pendingKey,

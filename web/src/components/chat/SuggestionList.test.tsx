@@ -62,4 +62,41 @@ describe('SuggestionList (server render smoke test)', () => {
     const html = render([inherited, own]);
     expect(html.indexOf('Зачем это?')).toBeLessThan(html.indexOf('Что дальше?'));
   });
+
+  describe('whole item', () => {
+    const whole: Suggestion = { text: 'W', target: 'план', up: 1, kind: 'whole' };
+
+    it('renders a distinct button with the kind tag and no source tag', () => {
+      const html = render([whole]);
+      expect(html).toContain('btn-sm suggestion suggestion-whole"');
+      expect(html).toContain('<span dir="auto">W</span>');
+      expect(html).toContain('<span class="suggestion-kind">whole topic</span>');
+      expect(html).not.toContain('suggestion-source');
+    });
+
+    it('names where it is asked in the title, the root with its own wording', () => {
+      expect(render([whole])).toContain('title="W\nAsks under план"');
+      expect(render([{ ...whole, target: '' }])).toContain(
+        'title="W\nAsks as a new top-level question"',
+      );
+    });
+
+    it('truncates a long label and keeps the full text in the title', () => {
+      const text = 'я'.repeat(SUGGESTION_LABEL_GRAPHEMES + 10);
+      const html = render([{ ...whole, text }]);
+      expect(html).toContain(`<span dir="auto">${'я'.repeat(SUGGESTION_LABEL_GRAPHEMES)}…</span>`);
+      expect(html).toContain(`title="${text}\nAsks under план"`);
+    });
+
+    it('renders a mixed list in order with a source tag on the inherited item only', () => {
+      const html = render([own, inherited, whole]);
+      expect(html.match(/<button/g)).toHaveLength(3);
+      const positions = ['Что дальше?', 'Зачем это?', '>W</span>'].map((part) =>
+        html.indexOf(part),
+      );
+      expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+      expect(html.match(/class="suggestion-source"/g)).toHaveLength(1);
+      expect(html.match(/suggestion-whole/g)).toHaveLength(1);
+    });
+  });
 });

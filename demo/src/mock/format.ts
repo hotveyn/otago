@@ -5,7 +5,9 @@
  *
  * Suggestions (`suggestions: <json>`, one line) are read from the RAW value of their line and
  * written only through `setSuggestionsLine` of the server's pure module, so the format is the
- * server's byte for byte (contract `inline-suggestions/contracts/node-file.ts`). They are
+ * server's byte for byte (contracts `inline-suggestions/contracts/node-file.ts` and
+ * `topic-split-v2/contracts/node-file.ts`: an optional `kind: 'whole'`, written as
+ * `{ text, up, kind }`). They are
  * written only at node creation; no later write exists.
  */
 import {

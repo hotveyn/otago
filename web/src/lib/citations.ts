@@ -64,8 +64,9 @@ const BACKTICK_RE = /^`([^`]+)`(.*)$/s;
 const MD_LINK_RE = /^\[([^\]]*)\]\((\S+?)\)(.*)$/s;
 const ANGLE_RE = /^<([^>]+)>$/;
 const URL_RE = /https?:\/\/[^\s<>)\]]+/;
-const DEFINITION_RE = /^\[\^([^\]\s]+)\]:[ \t]*(.*)$/;
-const REFERENCE_RE = /\[\^([^\]\s]+)\](?!:)/g;
+// Definitions are cut out line by line first, so a reference may be followed by `:` (`code[^1]:`).
+const DEFINITION_RE = /^ {0,3}\[\^([^\]\s]+)\]:[ \t]*(.*)$/;
+const REFERENCE_RE = /\[\^([^\]\s]+)\]/g;
 const INLINE_SOURCE_RE =
   /(?<![\w/[(])((?:\.\/)?sources\/[\p{L}\p{M}\p{Nd}_.,()'’+& -]+?\.(?:md|txt|pdf):\d+(?:\s*[-–]\s*\d+)?)/gu;
 

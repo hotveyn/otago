@@ -354,20 +354,36 @@ export type QuestionErrorCode =
 
 // ---------------------------------------------------------------------------
 // Suggested questions. Mirrors .claude/features/inline-suggestions/contracts/suggestions.ts,
-// suggestions-api.ts and errors.ts.
+// suggestions-api.ts and errors.ts, plus `kind` from
+// .claude/features/topic-split-v2/contracts/suggestions.ts.
 // ---------------------------------------------------------------------------
+
+/**
+ * Kind of a suggestion (`undefined` = regular). Open union, mirrors the contract's
+ * `BlockItemKind`: a value the client does not know must not be rendered.
+ */
+export type SuggestionKind = 'whole';
 
 /** One suggested follow-up question (already resolved by the server). */
 export interface Suggestion {
   /** Button label AND the question text to send, verbatim. Single line, NFC, ≤ 200 graphemes. */
   text: string;
-  /** Node to ask from (`parentId` of the question): the viewed node, or an ancestor (never `""`). */
+  /**
+   * Node to ask from (`parentId` of the question): the viewed node or an ancestor; `""` (tree
+   * root) only for `kind: 'whole'` on a top-level node.
+   */
   target: string;
   /**
-   * Levels above the viewed node (`0` = own). Inherited ⇔ `up > 0`; a node shown through the
-   * ancestor fallback has only inherited items (`up > 0`).
+   * Levels above the viewed node (`0` = own). Inherited ⇔ `up > 0` for regular items; a node
+   * shown through the ancestor fallback has only inherited items (`up > 0`). `whole` always has
+   * `up: 1` but is not inherited.
    */
   up: number;
+  /**
+   * Absent = regular. `'whole'` = "explain it whole": sent to `target` (the map node's parent),
+   * and the panel follows it.
+   */
+  kind?: SuggestionKind;
 }
 
 /**
@@ -378,7 +394,10 @@ export interface SuggestionsReady {
   /** Echo of the requested node id (NFC). */
   node: string;
   state: 'ready';
-  /** Own first, then inherited; invalid and "used" items already removed; not capped. */
+  /**
+   * Own regular, then inherited, then at most one `whole` item (last); invalid and "used" items
+   * already removed; not capped.
+   */
   suggestions: Suggestion[];
 }
 

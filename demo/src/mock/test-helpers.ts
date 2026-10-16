@@ -28,6 +28,9 @@ export function memoryStorage(initial: string | null = null) {
 export const NODE = (user: string, created: string, suggestions?: StoredSuggestion[]) =>
   `---\ncreated: ${created}\nmodel: claude-opus-5-5\n${suggestions ? `${suggestionsLine(suggestions)}\n` : ''}---\n<!-- otago:user -->\n${user}\n\n<!-- otago:assistant -->\nAnswer to ${user}\n`;
 
+/** A stored "explain it whole" item. */
+export const WHOLE = (text: string): StoredSuggestion => ({ text, up: 1, kind: 'whole' });
+
 /** One scripted block per attempt: texts, `undefined` (no block), or a function of the input. */
 export type BlockStep =
   | readonly string[]

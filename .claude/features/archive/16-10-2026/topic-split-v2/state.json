@@ -1,0 +1,39 @@
+{
+  "slug": "topic-split-v2",
+  "title": "Topic split v2: map only, every part a button, plus \"explain it whole\"",
+  "created": "2026-10-16T08:14:00Z",
+  "workspace_root": "/Users/ioannshestopalov/Programming/otago",
+  "contracts": {
+    "owner": "server",
+    "generated": true,
+    "path": ".claude/features/archive/16-10-2026/topic-split-v2/contracts"
+  },
+  "projects": [
+    {
+      "name": "server",
+      "root": "server",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "server",
+      "stage": "implemented"
+    },
+    {
+      "name": "web",
+      "root": "web",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "client",
+      "stage": "implemented"
+    },
+    {
+      "name": "demo",
+      "root": "demo",
+      "manifest": "package.json",
+      "stack": "node",
+      "role": "client",
+      "stage": "implemented"
+    }
+  ],
+  "archived": "2026-10-16T09:06:23Z",
+  "archived_to": ".claude/features/archive/16-10-2026/topic-split-v2"
+}

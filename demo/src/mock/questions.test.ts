@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SUGGESTIONS_MARKER } from '../../../server/src/storage/suggestion-block';
+import { SUGGESTIONS_MARKER, wholeItem } from '../../../server/src/storage/suggestion-block';
 import { ApiError } from '../../../web/src/api/client';
 import type { QuestionStreamEvent, TreeBusyDetails } from '../../../web/src/api/types';
 import { extractCitations } from '../../../web/src/lib/citations';
 import { demoConnection } from './connection';
 import { parseNodeFile } from './format';
+import { partText, wholeText } from './suggestions';
 import { type BlockStep, makeDemo, NODE, SMALL_SEED, scriptedBlocks } from './test-helpers';
 
 beforeEach(() => {
@@ -490,29 +491,36 @@ describe('simulated questions: suggestion block', () => {
     ]);
   });
 
-  it('cancel while the block is withheld creates no node and shows no block', async () => {
-    const items = Array.from({ length: 8 }, (_, i) => `Next question number ${i + 1}?`);
-    const { demo, events, chunks, streamed } = setup([items]);
-    const before = demo.vfs.list('t/a');
-    const { id } = await demo.api.startQuestion('t', {
-      parentId: 'a',
-      text: 'Why?',
-      context: main,
-    });
-    // Step until two ticks in a row emitted nothing: the block's tokens are being pushed.
-    let quiet = 0;
-    while (quiet < 2) {
-      const count = chunks().length;
-      await vi.advanceTimersToNextTimerAsync();
-      expect(statuses(events)).toEqual(['streaming']);
-      quiet = chunks().length === count ? quiet + 1 : 0;
-    }
-    await demo.api.cancelQuestion(id);
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(events.at(-1)).toMatchObject({ event: 'removed', data: { reason: 'cancelled' } });
-    expect(demo.vfs.list('t/a')).toEqual(before);
-    expect(streamed()).not.toContain('<!--');
-  });
+  const eight = Array.from({ length: 8 }, (_, i) => `Next question number ${i + 1}?`);
+  it.each([
+    ['', eight],
+    [' (with a whole item)', [...eight, wholeItem('All of it in one answer')]],
+  ])(
+    'cancel while the block%s is withheld creates no node and shows no block',
+    async (_, items) => {
+      const { demo, events, chunks, streamed } = setup([items]);
+      const before = demo.vfs.list('t/a');
+      const { id } = await demo.api.startQuestion('t', {
+        parentId: 'a',
+        text: 'Why?',
+        context: main,
+      });
+      // Step until two ticks in a row emitted nothing: the block's tokens are being pushed.
+      let quiet = 0;
+      while (quiet < 2) {
+        const count = chunks().length;
+        await vi.advanceTimersToNextTimerAsync();
+        expect(statuses(events)).toEqual(['streaming']);
+        quiet = chunks().length === count ? quiet + 1 : 0;
+      }
+      await demo.api.cancelQuestion(id);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(events.at(-1)).toMatchObject({ event: 'removed', data: { reason: 'cancelled' } });
+      expect(demo.vfs.list('t/a')).toEqual(before);
+      expect(streamed()).not.toContain('<!--');
+      expect(streamed()).not.toContain('All of it');
+    },
+  );
 
   it('a failed attempt stores nothing; the retry asks again with recomputed candidates', async () => {
     const { demo, script, events, stored } = setup(
@@ -548,7 +556,121 @@ describe('simulated questions: suggestion block', () => {
     expect(stored(nodeId)).toEqual([{ text: 'About the file?', up: 0 }]);
   });
 
-  it('end to end with the default simulator: plan steps are inherited and hidden once asked', async () => {
+  const MAP_START = 'This topic is too big for one answer';
+  const PARTS = ['Part one', 'Part two', 'Part three'];
+  const WHOLE_TEXT = 'All of it in one answer';
+  const MAP_BLOCK = [...PARTS, wholeItem(WHOLE_TEXT)];
+
+  it('a split answer is only the map; parts are own items and the whole item is stored last', async () => {
+    const { demo, events, chunks, streamed, raw, stored, assistantOf } = setup([MAP_BLOCK]);
+    const { id } = await demo.api.startQuestion('t', { parentId: '', text: 'Big?', context: main });
+    while (!statuses(events).includes('done')) {
+      await vi.advanceTimersToNextTimerAsync();
+      expectContiguous(chunks());
+      for (const text of [
+        streamed(),
+        demo.questions.snapshot().questions.find((q) => q.id === id)?.live?.answer ?? '',
+      ]) {
+        expect(text).not.toContain('otago');
+        expect(text).not.toContain('All of it');
+      }
+    }
+    const nodeId = doneNodeOf(events, id);
+    expect(stored(nodeId)).toEqual([
+      ...PARTS.map((text) => ({ text, up: 0 })),
+      { text: WHOLE_TEXT, up: 1, kind: 'whole' },
+    ]);
+    const line = raw(nodeId)
+      .split('\n')
+      .find((l) => l.startsWith('suggestions:'));
+    expect(line?.endsWith(`{"text":"${WHOLE_TEXT}","up":1,"kind":"whole"}]`)).toBe(true);
+    const assistant = await assistantOf(nodeId);
+    expect(assistant.startsWith(MAP_START)).toBe(true);
+    const at1 = assistant.indexOf('1. Part one');
+    const at2 = assistant.indexOf('2. Part two');
+    const at3 = assistant.indexOf('3. Part three');
+    expect(at1).toBeGreaterThan(0);
+    expect(at2).toBeGreaterThan(at1);
+    expect(at3).toBeGreaterThan(at2);
+    expect((await demo.api.getSuggestions('t', nodeId)).suggestions).toEqual([
+      ...PARTS.map((text) => ({ text, target: nodeId, up: 0 })),
+      { text: WHOLE_TEXT, target: '', up: 1, kind: 'whole' },
+    ]);
+  });
+
+  it("explain it whole asks the map's parent and hides the button", async () => {
+    const { demo, script, ask } = setup([MAP_BLOCK, undefined]);
+    const map = await ask('a', 'Big?');
+    const whole = await ask('a', WHOLE_TEXT);
+    expect(whole).toMatch(/^a\/[^/]+$/);
+    expect(whole).not.toBe(map);
+    expect(script.calls[1]?.parentId).toBe('a');
+    expect(script.calls[1]?.openSuggestions).not.toContain(WHOLE_TEXT);
+    expect((await demo.api.getSuggestions('t', map)).suggestions).toEqual(
+      PARTS.map((text) => ({ text, target: map, up: 0 })),
+    );
+  });
+
+  it('a part does not get the whole item', async () => {
+    const { demo, script, ask } = setup([MAP_BLOCK, undefined]);
+    const map = await ask('a', 'Big?');
+    const part = await ask(map, 'Part one');
+    expect(script.calls[1]?.openSuggestions).toEqual(['Part two', 'Part three']);
+    expect((await demo.api.getSuggestions('t', part)).suggestions).toEqual([
+      { text: 'Part two', target: map, up: 1 },
+      { text: 'Part three', target: map, up: 1 },
+    ]);
+    expect((await demo.api.getSuggestions('t', map)).suggestions).toEqual([
+      { text: 'Part two', target: map, up: 0 },
+      { text: 'Part three', target: map, up: 0 },
+      { text: WHOLE_TEXT, target: 'a', up: 1, kind: 'whole' },
+    ]);
+  });
+
+  it('a whole item without a split is dropped and the answer is Lorem', async () => {
+    const lone = setup([['Only part', wholeItem('W')]]);
+    const single = await lone.ask('a', 'Small?');
+    expect(lone.stored(single)).toEqual([{ text: 'Only part', up: 0 }]);
+    expect((await lone.assistantOf(single)).startsWith(MAP_START)).toBe(false);
+
+    // Kept items are not parts: one own item is not a map.
+    const kept = setup([['New', 'P1', 'P2', wholeItem('W')]], {
+      't/a/node.md': NODE('A?', at(1), [
+        { text: 'P1', up: 0 },
+        { text: 'P2', up: 0 },
+      ]),
+    });
+    const nodeId = await kept.ask('a', 'Why?');
+    expect(kept.stored(nodeId)).toEqual([
+      { text: 'New', up: 0 },
+      { text: 'P1', up: 1 },
+      { text: 'P2', up: 1 },
+    ]);
+    expect((await kept.assistantOf(nodeId)).startsWith(MAP_START)).toBe(false);
+  });
+
+  it('two whole items: the first wins', async () => {
+    const { ask, stored } = setup([['A', 'B', wholeItem('W1'), wholeItem('W2')]]);
+    const nodeId = await ask('a', 'Big?');
+    expect(stored(nodeId)).toEqual([
+      { text: 'A', up: 0 },
+      { text: 'B', up: 0 },
+      { text: 'W1', up: 1, kind: 'whole' },
+    ]);
+  });
+
+  it('nested map: the whole item targets the outer map', async () => {
+    const { demo, ask } = setup([MAP_BLOCK, ['Sub one', 'Sub two', wholeItem('All of part one')]]);
+    const big = await ask('a', 'Big?');
+    const inner = await ask(big, 'Part one');
+    expect((await demo.api.getSuggestions('t', inner)).suggestions).toEqual([
+      { text: 'Sub one', target: inner, up: 0 },
+      { text: 'Sub two', target: inner, up: 0 },
+      { text: 'All of part one', target: big, up: 1, kind: 'whole' },
+    ]);
+  });
+
+  it('end to end with the default simulator: a plan is split into a map, parts are inherited without the whole item, the whole item asks the parent', async () => {
     const { demo } = makeDemo();
     const events = record(demo);
     const ask = async (parentId: string, text: string) => {
@@ -556,36 +678,46 @@ describe('simulated questions: suggestion block', () => {
       await vi.runAllTimersAsync();
       return doneNodeOf(events, id);
     };
-    const step1 = "Let's start with step 1 of ownership";
-    const step2 = "Let's go to step 2 of ownership";
-    const step3 = "Let's go to step 3 of ownership";
+    const assistantOf = async (nodeId: string) =>
+      (await demo.api.getChain('t', nodeId)).at(-1)?.assistant ?? '';
+    const storedOf = (nodeId: string) =>
+      parseNodeFile(demo.vfs.readText(`t/${nodeId}/node.md`) ?? '').suggestions;
+    const view = async (nodeId: string) => (await demo.api.getSuggestions('t', nodeId)).suggestions;
+    const [part1, part2, part3] = [1, 2, 3].map((n) => partText('ownership', n)) as [
+      string,
+      string,
+      string,
+    ];
+    const whole = wholeText('ownership');
 
-    const plan = await ask('', 'Make a plan for ownership');
-    expect((await demo.api.getSuggestions('t', plan)).suggestions).toEqual([
-      { text: step1, target: plan, up: 0 },
-      { text: step2, target: plan, up: 0 },
-      { text: step3, target: plan, up: 0 },
+    const map = await ask('', 'Make a plan for ownership');
+    expect(await view(map)).toEqual([
+      { text: part1, target: map, up: 0 },
+      { text: part2, target: map, up: 0 },
+      { text: part3, target: map, up: 0 },
+      { text: whole, target: '', up: 1, kind: 'whole' },
     ]);
+    expect((await assistantOf(map)).startsWith(MAP_START)).toBe(true);
 
-    const child = await ask(plan, step1);
-    const stored = parseNodeFile(demo.vfs.readText(`t/${child}/node.md`) ?? '').suggestions;
-    expect(stored).toEqual([
-      { text: step2, up: 1 },
-      { text: step3, up: 1 },
+    const child = await ask(map, part1);
+    expect(storedOf(child)).toEqual([
+      { text: part2, up: 1 },
+      { text: part3, up: 1 },
     ]);
-    const inherited = async () =>
-      (await demo.api.getSuggestions('t', child)).suggestions.filter((s) => s.up > 0);
-    expect(await inherited()).toEqual([
-      { text: step2, target: plan, up: 1 },
-      { text: step3, target: plan, up: 1 },
+    expect(await view(child)).toEqual([
+      { text: part2, target: map, up: 1 },
+      { text: part3, target: map, up: 1 },
     ]);
-    // Step 1 is now used under the plan node.
-    expect((await demo.api.getSuggestions('t', plan)).suggestions.map((s) => s.text)).toEqual([
-      step2,
-      step3,
-    ]);
+    // Part 1 is now used under the map node; the whole item stays last.
+    expect((await view(map)).map((s) => s.text)).toEqual([part2, part3, whole]);
 
-    await ask(plan, step2);
-    expect(await inherited()).toEqual([{ text: step3, target: plan, up: 1 }]);
+    await ask(map, part2);
+    expect(await view(child)).toEqual([{ text: part3, target: map, up: 1 }]);
+
+    const top = await ask('', whole);
+    expect(top).not.toContain('/');
+    expect((await assistantOf(top)).startsWith(MAP_START)).toBe(false);
+    expect(storedOf(top)?.every((item) => item.kind === undefined)).toBe(true);
+    expect((await view(map)).map((s) => s.text)).toEqual([part3]);
   });
 });

@@ -16,6 +16,11 @@ export interface SuggestionsOptions {
   models: ModelChoice;
   /** Panel gating: no in-flight view, the chain shows `nodeId` last, no chain error. */
   show: boolean;
+  /**
+   * Move this panel to `parentId` after a click on an item that moves focus (the "whole"
+   * item). App: `sendFocusTarget` + navigate.
+   */
+  onMoveFocus: (context: QuestionContext, parentId: string) => void;
 }
 
 export interface Suggestions {
@@ -38,6 +43,7 @@ export function useSuggestions({
   stashKey,
   models,
   show,
+  onMoveFocus,
 }: SuggestionsOptions): Suggestions {
   const store = useQuestionStore();
   const hydrated = useHydrated();
@@ -65,9 +71,17 @@ export function useSuggestions({
   const { model, namingModel } = models;
   const ask = useCallback(
     (suggestion: Suggestion) => {
-      askSuggestion(store, { tree: treeId, context, stashKey, suggestion, model, namingModel });
+      askSuggestion(store, {
+        tree: treeId,
+        context,
+        stashKey,
+        suggestion,
+        model,
+        namingModel,
+        moveFocus: (parentId) => onMoveFocus(context, parentId),
+      });
     },
-    [store, treeId, context, stashKey, model, namingModel],
+    [store, treeId, context, stashKey, model, namingModel, onMoveFocus],
   );
 
   return { items, ask };

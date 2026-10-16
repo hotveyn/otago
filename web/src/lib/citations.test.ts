@@ -402,6 +402,25 @@ describe('extractCitations', () => {
     );
   });
 
+  it('rewrites references followed by a colon and strips indented definitions', () => {
+    const md = [
+      'Вариант на JavaScript[^1]:',
+      '',
+      '```js',
+      'f();',
+      '```',
+      '',
+      'Again[^1]: done.',
+      '',
+      '  [^1]: sources/a.pdf:70',
+    ].join('\n');
+    const { body, citations } = extractCitations(md);
+    expect(body).toBe(
+      'Вариант на JavaScript[1](#cite-1):\n\n```js\nf();\n```\n\nAgain[1](#cite-1): done.',
+    );
+    expect(citations).toMatchObject([{ key: '1', number: 1, target: { kind: 'source' } }]);
+  });
+
   it('appends unreferenced definitions', () => {
     const { citations } = extractCitations('Text.\n\n[^x]: https://a.dev');
     expect(citations).toMatchObject([{ key: 'x', number: 1 }]);

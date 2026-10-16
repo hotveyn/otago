@@ -20,9 +20,12 @@ import {
   askSuggestion,
   hasInFlightSuggestion,
   inFlightSuggestionKeys,
+  isKnownSuggestion,
+  isWholeSuggestion,
   SUGGESTION_LABEL_GRAPHEMES,
   suggestionKey,
   suggestionLabel,
+  suggestionMovesFocus,
   suggestionSource,
   visibleSuggestions,
 } from './suggestions';
@@ -91,6 +94,14 @@ const key = (target: string, text: string) => `${target}\0${text}`;
 
 const own = (text: string, target = 'план/глава-1'): Suggestion => ({ text, target, up: 0 });
 const inherited = (text: string, target = 'план', up = 1): Suggestion => ({ text, target, up });
+const whole = (text: string, target = 'план'): Suggestion => ({
+  text,
+  target,
+  up: 1,
+  kind: 'whole',
+});
+const unknownKind = (text: string, target = 'план/глава-1'): Suggestion =>
+  ({ text, target, up: 0, kind: 'extra' }) as unknown as Suggestion;
 
 describe('suggestionKey', () => {
   it('trims', () => {
@@ -169,8 +180,69 @@ describe('inFlightSuggestionKeys', () => {
   });
 });
 
+describe('inFlightSuggestionKeys with the root target', () => {
+  it('finds an outbox entry and a running question with parentId ""', () => {
+    const state = stateOf(
+      [running('a', { parentId: '', text: 'Целиком' })],
+      [outbox('out-1', { parentId: '', text: 'Другое' })],
+    );
+    expect(inFlightSuggestionKeys(state, 't', [''])).toEqual([
+      key('', 'Другое'),
+      key('', 'Целиком'),
+    ]);
+  });
+});
+
 describe('visibleSuggestions', () => {
   const main = { anchor: null };
+
+  describe('kinds', () => {
+    it('drops an unknown kind and keeps the regular items around it in order', () => {
+      const list = [own('a'), unknownKind('b'), own('c')];
+      expect(visibleSuggestions(list, [], main)).toEqual([own('a'), own('c')]);
+    });
+
+    it('keeps a whole item whose text equals an own item, and the own item too', () => {
+      const list = [own('Вопрос'), whole('Вопрос')];
+      expect(visibleSuggestions(list, [], main)).toEqual(list);
+    });
+
+    it('is not removed by a preceding inherited duplicate and hides nothing', () => {
+      const list = [inherited('Вопрос', 'план', 1), whole('Вопрос')];
+      expect(visibleSuggestions(list, [], main)).toEqual(list);
+      const reversed = [whole('Вопрос'), inherited('Вопрос', 'план', 1)];
+      expect(visibleSuggestions(reversed, [], main)).toEqual([reversed[1], reversed[0]]);
+    });
+
+    it('places a whole item last and keeps the regular order', () => {
+      const list = [whole('W'), own('a'), inherited('b'), own('c')];
+      expect(visibleSuggestions(list, [], main)).toEqual([
+        own('a'),
+        inherited('b'),
+        own('c'),
+        whole('W'),
+      ]);
+    });
+
+    it('keeps only the first of two whole items, placed last', () => {
+      const list = [whole('W1'), own('a'), whole('W2', '')];
+      expect(visibleSuggestions(list, [], main)).toEqual([own('a'), whole('W1')]);
+    });
+
+    it('hides a whole item with an in-flight entry under its own target only', () => {
+      expect(visibleSuggestions([whole('W', '')], [key('', 'W')], main)).toEqual([]);
+      expect(visibleSuggestions([whole('W')], [key('план', 'W')], main)).toEqual([]);
+      expect(visibleSuggestions([whole('W')], [key('', 'W')], main)).toEqual([whole('W')]);
+    });
+
+    it('applies the side anchor rule to whole items', () => {
+      const anchor = { anchor: 'а/б' };
+      expect(visibleSuggestions([whole('W', 'а/б')], [], anchor)).toEqual([whole('W', 'а/б')]);
+      expect(visibleSuggestions([whole('W', 'а/б/в')], [], anchor)).toEqual([whole('W', 'а/б/в')]);
+      expect(visibleSuggestions([whole('W', 'а')], [], anchor)).toEqual([]);
+      expect(visibleSuggestions([whole('W', '')], [], { anchor: '' })).toEqual([whole('W', '')]);
+    });
+  });
 
   it('hides an item with an in-flight entry under its target only', () => {
     const list = [own('Глава 2', 'план'), inherited('Глава 2', 'корень')];
@@ -266,6 +338,31 @@ describe('suggestionSource', () => {
   });
 });
 
+describe('suggestion kind predicates', () => {
+  it('classifies regular, whole and unknown items', () => {
+    expect([own('q'), whole('q'), unknownKind('q')].map(isKnownSuggestion)).toEqual([
+      true,
+      true,
+      false,
+    ]);
+    expect([own('q'), whole('q'), unknownKind('q')].map(isWholeSuggestion)).toEqual([
+      false,
+      true,
+      false,
+    ]);
+    expect([own('q'), whole('q'), unknownKind('q')].map(suggestionMovesFocus)).toEqual([
+      false,
+      true,
+      false,
+    ]);
+  });
+
+  it('gives a whole item no source tag, the root target included', () => {
+    expect(suggestionSource(whole('q'))).toBeNull();
+    expect(suggestionSource(whole('q', ''))).toBeNull();
+  });
+});
+
 describe('hasInFlightSuggestion', () => {
   it('matches the target and the key', () => {
     const state = stateOf([running('a', { text: 'Глава 2 ' })]);
@@ -281,7 +378,7 @@ describe('askSuggestion', () => {
     reject: (error: unknown) => void;
   }
 
-  function setup() {
+  function setup(schedule: (run: () => void) => void = (run) => run()) {
     const starts: PendingStart[] = [];
     const api = {
       startQuestion: vi.fn<QuestionApi['startQuestion']>(
@@ -296,7 +393,7 @@ describe('askSuggestion', () => {
       cancelQuestion: vi.fn<QuestionApi['cancelQuestion']>(async () => undefined),
       retryQuestion: vi.fn<QuestionApi['retryQuestion']>(async (id) => running(id)),
     };
-    const store = createQuestionStore({ api, now: () => 1_000, schedule: (run) => run() });
+    const store = createQuestionStore({ api, now: () => 1_000, schedule });
     const lifecycle: LifecycleEvent[] = [];
     store.onLifecycle((event) => lifecycle.push(event));
     return { api, store, starts, lifecycle };
@@ -364,5 +461,64 @@ describe('askSuggestion', () => {
     expect(ended).toMatchObject({ outcome: 'aborted', restored: true, shown: false });
     expect(store.getState().outbox[id]).toBeUndefined();
     expect(draftStash.get(input.stashKey)).toBeNull();
+  });
+
+  describe('whole items move focus', () => {
+    const mainInput = {
+      tree: 't',
+      context: { kind: 'main' } as const,
+      stashKey: 't:main',
+      suggestion: whole('Целиком', ''),
+      model: 'claude-x',
+      namingModel: null,
+    };
+
+    it('sends to the root and moves after the outbox entry is published', () => {
+      // Publishing is deferred, so only `flush` makes the entry visible to React.
+      const { api, store } = setup(() => undefined);
+      const seen: string[][] = [];
+      const moveFocus = vi.fn((parentId: string) => {
+        seen.push(Object.values(store.getSnapshot().outbox).map((entry) => entry.parentId));
+        expect(parentId).toBe('');
+      });
+      const id = askSuggestion(store, { ...mainInput, moveFocus });
+      expect(id).toMatch(/^out-/);
+      expect(moveFocus).toHaveBeenCalledTimes(1);
+      expect(seen).toEqual([['']]);
+      const [, body] = api.startQuestion.mock.calls[0] ?? [];
+      expect(body).toMatchObject({ parentId: '', text: 'Целиком', files: [] });
+    });
+
+    it('moves a side panel to the target with the side context in the body', () => {
+      const { api, store } = setup();
+      const moveFocus = vi.fn();
+      askSuggestion(store, { ...input, suggestion: whole('Целиком', 'план'), moveFocus });
+      expect(moveFocus).toHaveBeenCalledExactlyOnceWith('план');
+      const [, body] = api.startQuestion.mock.calls[0] ?? [];
+      expect(body).toMatchObject({ parentId: 'план', context: { kind: 'side', anchor: 'план' } });
+    });
+
+    it('never moves for regular items', () => {
+      const { store } = setup();
+      const moveFocus = vi.fn();
+      askSuggestion(store, { ...input, suggestion: own('Свой', 'план'), moveFocus });
+      askSuggestion(store, { ...input, moveFocus });
+      expect(moveFocus).not.toHaveBeenCalled();
+    });
+
+    it('does not move again on a refused second click', () => {
+      const { api, store } = setup();
+      const moveFocus = vi.fn();
+      askSuggestion(store, { ...mainInput, moveFocus });
+      expect(askSuggestion(store, { ...mainInput, moveFocus })).toBeNull();
+      expect(moveFocus).toHaveBeenCalledTimes(1);
+      expect(api.startQuestion).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends normally without moveFocus', () => {
+      const { api, store } = setup();
+      expect(askSuggestion(store, mainInput)).toMatch(/^out-/);
+      expect(api.startQuestion).toHaveBeenCalledTimes(1);
+    });
   });
 });

@@ -164,6 +164,7 @@ export async function runAttempt(job: QuestionJob, deps: RunnerDeps): Promise<vo
       );
     }
     if (split.answer.trim() === '') throw new Error('Agent returned an empty answer');
+    // Raw items keep the `whole` prefix: finalization classifies them.
     const suggestions =
       split.items === undefined
         ? undefined

@@ -24,7 +24,7 @@ import {
   touchesForeignTemp,
 } from '../src/agent/index.js';
 import { TreeBusyError } from '../src/errors.js';
-import { SUGGESTIONS_MARKER } from '../src/storage/index.js';
+import { SUGGESTIONS_MARKER, WHOLE_ITEM_PREFIX } from '../src/storage/index.js';
 
 const noStaging: AttachmentStaging = {
   saveFromBytes: () => Promise.reject(new Error('not used')),
@@ -125,15 +125,18 @@ describe('prompt building', () => {
     expect(section).not.toMatch(/\d/);
   });
 
-  it('splits a big topic: first part now, the remaining parts as next questions', () => {
+  it('splits a big topic: map only, every part and a whole-topic item as next questions', () => {
     const start = SYSTEM_RULES.indexOf('Big topics:');
     expect(start).toBeGreaterThan(-1);
     expect(start).toBeLessThan(SYSTEM_RULES.indexOf('Next questions:'));
     const end = SYSTEM_RULES.indexOf('\n\n', start);
     const section = SYSTEM_RULES.slice(start, end);
     for (const phrase of [
-      'only the first part, in full detail',
-      'one request per remaining part',
+      'only the map',
+      'Explain no part',
+      'one request per part, the first part included',
+      WHOLE_ITEM_PREFIX,
+      'only when you split',
       '<open-suggestions>',
       'word for word',
       'split again',
@@ -141,9 +144,18 @@ describe('prompt building', () => {
     ]) {
       expect(section).toContain(phrase);
     }
+    for (const phrase of [
+      'only the first part, in full detail',
+      'one request per remaining part',
+    ]) {
+      expect(section).not.toContain(phrase);
+    }
     // Like the next-questions rules: no number of parts or questions.
     expect(section).not.toMatch(/\d/);
-    expect(SYSTEM_RULES).toContain('the remaining parts of a split topic');
+    // The example line is not a fake block.
+    expect(section).not.toContain(SUGGESTIONS_MARKER);
+    expect(SYSTEM_RULES).toContain('the parts of a split topic');
+    expect(SYSTEM_RULES).not.toContain('the remaining parts of a split topic');
   });
 
   it('lists the open suggestions between the transcript and the new question', () => {

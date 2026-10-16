@@ -112,6 +112,8 @@ export const chat = {
     label: 'Suggested questions',
     from: 'from <name>{{name}}</name>',
     askUnder: 'Asks under {{target}}',
+    askAtRoot: 'Asks as a new top-level question',
+    whole: 'whole topic',
   },
   citations: {
     heading: 'Sources',

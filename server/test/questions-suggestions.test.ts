@@ -11,6 +11,7 @@ import {
   SUGGESTIONS_MARKER,
   serializeNodeFile,
   suggestionBlock,
+  wholeItem,
 } from '../src/storage/index.js';
 import {
   askAndSettle,
@@ -394,5 +395,135 @@ describe('suggestion blocks of answers', () => {
     const node = await readNode(done.nodeId);
     expect(node.user).toBe('');
     expect(node.suggestions).toEqual([{ text: 'Next', up: 0 }]);
+  });
+
+  describe('topic split: map with a whole item', () => {
+    const MAP = 'The topic is big. Map:\n\n- Part one\n- Part two\n- Part three';
+    const PARTS = ['Part one', 'Part two', 'Part three'];
+    const WHOLE = 'Whole chapter in one answer';
+    const mapBlock = suggestionBlock([...PARTS, wholeItem(WHOLE)]);
+
+    /** Call 0 answers with the map; every later call with a plain answer. */
+    const mapAgent = () =>
+      scriptedAgent({
+        chunks: (_input, call) => (call === 0 ? [MAP, mapBlock] : ['Part answer.']),
+      });
+
+    it('S1–S3: stores the map, offers its parts, hides used items and the whole item', async () => {
+      const agent = await setup(mapAgent());
+      const { question, started } = await askAndSettle(ctx, {
+        parentId: '',
+        text: 'Explain chapter four',
+      });
+      const map = expectDone(question).nodeId;
+      const node = await readNode(map);
+      expect(node.assistant).toBe(MAP);
+      expect(node.suggestions).toEqual([
+        ...PARTS.map((text) => ({ text, up: 0 })),
+        { text: WHOLE, up: 1, kind: 'whole' },
+      ]);
+      const raw = await readFile(nodeFile(map), 'utf8');
+      expect(raw).toContain(`{"text":"${WHOLE}","up":1,"kind":"whole"}`);
+      for (const event of ctx.events.forQuestion(started.id)) {
+        if (event.event !== 'chunk') continue;
+        expect(event.data.text).not.toContain('otago');
+        expect(event.data.text).not.toContain(WHOLE);
+      }
+      expect(ctx.events.text(started.id)).toBe(`${MAP}\n\n`);
+      const live = ctx.questions.detail(started.id)?.live?.answer;
+      expect(live ?? '').not.toContain('otago');
+      expect(agent.nameCalls[0]?.answer).toBe(MAP);
+      expect(await getSuggestions(map)).toEqual([
+        ...PARTS.map((text) => ({ text, target: map, up: 0 })),
+        { text: WHOLE, target: '', up: 1, kind: 'whole' },
+      ]);
+
+      // S2: a part asked from the map.
+      const part = expectDone(
+        (await askAndSettle(ctx, { parentId: map, text: 'Part one' })).question,
+      ).nodeId;
+      expect(agent.calls[1]?.openSuggestions).toEqual(['Part two', 'Part three']);
+      expect(await getSuggestions(part)).toEqual([
+        { text: 'Part two', target: map, up: 1 },
+        { text: 'Part three', target: map, up: 1 },
+      ]);
+      expect(await getSuggestions(map)).toEqual([
+        { text: 'Part two', target: map, up: 0 },
+        { text: 'Part three', target: map, up: 0 },
+        { text: WHOLE, target: '', up: 1, kind: 'whole' },
+      ]);
+      // The next part under the map: the whole text is never a candidate.
+      await askAndSettle(ctx, { parentId: map, text: 'Something else' });
+      expect(agent.calls[2]?.openSuggestions).toEqual(['Part two', 'Part three']);
+
+      // S3: explain it whole, a sibling of the map.
+      const whole = expectDone(
+        (await askAndSettle(ctx, { parentId: '', text: WHOLE })).question,
+      ).nodeId;
+      expect(whole.includes('/')).toBe(false);
+      expect(await getSuggestions(map)).toEqual([
+        { text: 'Part two', target: map, up: 0 },
+        { text: 'Part three', target: map, up: 0 },
+      ]);
+    });
+
+    it('a nested map: the whole item targets its parent and follows a move', async () => {
+      await setup(always('Answer.'));
+      await writeNode('p', 'P?');
+      await writeNode('other', 'Other?');
+      await writeNode('p/map', 'Map?', [
+        { text: 'A', up: 0 },
+        { text: 'B', up: 0 },
+        { text: 'W', up: 1, kind: 'whole' },
+      ]);
+      expect((await getSuggestions('p/map')).at(-1)).toEqual({
+        text: 'W',
+        target: 'p',
+        up: 1,
+        kind: 'whole',
+      });
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/trees/rust/nodes/move',
+        payload: { ids: ['p/map'], targetParentId: 'other' },
+      });
+      expect(res.statusCode).toBe(200);
+      expect((await getSuggestions('other/map')).at(-1)).toEqual({
+        text: 'W',
+        target: 'other',
+        up: 1,
+        kind: 'whole',
+      });
+    });
+
+    it('a whole item without a split is dropped', async () => {
+      await setup(always('Answer.', suggestionBlock(['Only one', wholeItem(WHOLE)])));
+      const done = expectDone((await askAndSettle(ctx, { parentId: '', text: 'Q' })).question);
+      expect((await readNode(done.nodeId)).suggestions).toEqual([{ text: 'Only one', up: 0 }]);
+    });
+
+    it('cancel inside a block with a whole item: no node, no whole line in any chunk', async () => {
+      const gate = deferred();
+      let reached = false;
+      await setup(
+        scriptedAgent({
+          chunks: () => ['Answer.', `\n\n${M}\n`, '- A\n', `- ${wholeItem(WHOLE)}\n`, '- B'],
+          gate: (index) => {
+            if (index !== 4) return undefined;
+            reached = true;
+            return gate.promise;
+          },
+        }),
+      );
+      const res = await postQuestion(ctx, { parentId: '', text: 'Q' });
+      const id = res.json().question.id as string;
+      await waitFor(() => reached);
+      expect(ctx.questions.detail(id)?.live?.answer).toBe('Answer.\n\n');
+      await ctx.app.inject({ method: 'DELETE', url: `/api/questions/${id}` });
+      expect(await ctx.questions.settled(id)).toBeUndefined();
+      expect(ctx.events.text(id)).toBe('Answer.\n\n');
+      expect(ctx.events.text(id)).not.toContain('otago:whole');
+      expect(await treeEntries()).toEqual(['tree.md']);
+    });
   });
 });

@@ -1,6 +1,7 @@
 // The suggestion block the answering agent may append to its answer: grammar, the streaming
-// filter that withholds it and the split at save. Mirrors
-// .claude/features/inline-suggestions/contracts/block.ts.
+// filter that withholds it, the split at save and the "whole" item prefix. Mirrors
+// .claude/features/inline-suggestions/contracts/block.ts and
+// .claude/features/topic-split-v2/contracts/block.ts.
 // Pure and Node-free (imports nothing): demo/src/mock/ imports this file as-is. One line state
 // machine serves both the filter and the split, so they never disagree on the same text.
 
@@ -16,6 +17,33 @@ export const BLANK_LINE_RE = /^[ \t]*\r?$/;
 /** Fence open / close (same rule as `removeFencedBlocks` in `agent/prompt.ts`). */
 export const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})/;
 export const FENCE_CLOSE_RE = /^ {0,3}(`{3,}|~{3,})\s*$/;
+
+/** Canonical prefix of the "explain it whole" item (what the prompt asks for, `wholeItem` writes). */
+export const WHOLE_ITEM_PREFIX = '<!-- otago:whole -->';
+/** The prefix at the start of a raw item text (case-sensitive); group 1 = the rest, unsanitized. */
+export const WHOLE_ITEM_RE = /^<!--[ \t]*otago:whole[ \t]*-->[ \t]*(.*)$/;
+
+/** Kinds a block item can have; absent = a regular suggestion. */
+export type BlockItemKind = 'whole';
+
+/** One raw block item, classified. */
+export interface BlockItem {
+  /** The item text without the prefix (still raw: finalization sanitizes it). */
+  text: string;
+  /** `'whole'` when the raw text starts with the prefix; absent for a regular item. */
+  kind?: BlockItemKind;
+}
+
+/** Classify a raw item text (`SplitAnswer.items` element). */
+export function parseBlockItem(raw: string): BlockItem {
+  const match = WHOLE_ITEM_RE.exec(raw);
+  return match ? { text: match[1] ?? '', kind: 'whole' } : { text: raw };
+}
+
+/** A raw "whole" item text for `suggestionBlock` (tests, demo simulator). */
+export function wholeItem(text: string): string {
+  return `${WHOLE_ITEM_PREFIX} ${text}`;
+}
 
 const MARKER_OPEN = '<!--';
 

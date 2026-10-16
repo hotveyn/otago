@@ -1,6 +1,7 @@
 import { type CSSProperties, useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useTree, useTrees } from './api/queries';
+import type { QuestionContext } from './api/types';
 import { AttachmentViewer } from './components/AttachmentViewer';
 import { ChatView } from './components/chat/ChatView';
 import { SideChatView, type SideSeed } from './components/chat/SideChatView';
@@ -21,7 +22,7 @@ import { Notices } from './components/ui/Notices';
 import { Splitter } from './components/ui/Splitter';
 import { type BlockersOpened, treeBusyDetailsOf } from './lib/blockers';
 import { CHAT_MIN_WIDTH, SIDE_MIN_WIDTH, usePaneLayout } from './lib/layout';
-import { askAsideTarget, openPendingTarget } from './lib/question-focus';
+import { askAsideTarget, openPendingTarget, sendFocusTarget } from './lib/question-focus';
 import { useQuestionStore } from './lib/question-store';
 import { afterMove } from './lib/tree';
 import {
@@ -104,6 +105,15 @@ export function App() {
       if (target) navigate(target);
       seedNonce.current += 1;
       setSideSeed({ nonce: seedNonce.current, text });
+    },
+    [navigate],
+  );
+  // A "whole" suggestion click: the clicked panel follows the send to its target (the map's
+  // parent), so the box shows there at once and the 202 focus applies (`acceptedFocus`).
+  const moveFocus = useCallback(
+    (context: QuestionContext, parentId: string) => {
+      const patch = sendFocusTarget(liveUrl(), context, parentId);
+      if (patch) navigate(patch);
     },
     [navigate],
   );
@@ -259,6 +269,7 @@ export function App() {
                   question={url.question}
                   onSelectNode={setCurrent}
                   onAskAside={url.question ? null : askAside}
+                  onMoveFocus={moveFocus}
                 />
               )}
               {viewer?.kind === 'source' && url.tree && (
@@ -288,6 +299,7 @@ export function App() {
                   onSeedConsumed={consumeSeed}
                   onPromote={promote}
                   onClose={close}
+                  onMoveFocus={moveFocus}
                 />
               </section>
             )}

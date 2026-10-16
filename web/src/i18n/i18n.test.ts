@@ -16,4 +16,9 @@ describe('translations', () => {
   it('falls back to English for an unknown language', () => {
     expect(i18n.getFixedT('de', 'chat')('composer.send')).toBe('Send');
   });
+
+  it('has the "whole topic" tag in both languages', () => {
+    expect(ru('suggestions.whole')).toBe('вся тема');
+    expect(i18n.getFixedT('de', 'chat')('suggestions.whole')).toBe('whole topic');
+  });
 });

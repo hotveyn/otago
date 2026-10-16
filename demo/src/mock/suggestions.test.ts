@@ -1,9 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  parseBlockItem,
+  splitSuggestionBlock,
+  wholeItem,
+} from '../../../server/src/storage/suggestion-block';
 import type { StoredSuggestion } from '../../../server/src/storage/suggestions';
 import { ApiError } from '../../../web/src/api/client';
 import { parseNodeFile } from './format';
-import { type SimulatedBlockInput, simulateSuggestionBlock, suggestionTopic } from './suggestions';
-import { type BlockStep, makeDemo, NODE, SMALL_SEED, scriptedBlocks } from './test-helpers';
+import {
+  mapAnswer,
+  type SimulatedBlockInput,
+  simulateSuggestionBlock,
+  splitParts,
+  suggestionTopic,
+  wholeText,
+} from './suggestions';
+import { type BlockStep, makeDemo, NODE, SMALL_SEED, scriptedBlocks, WHOLE } from './test-helpers';
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -167,6 +179,52 @@ describe('suggestions: GET', () => {
     expect(response).toMatchObject({ node: 'ёж', state: 'ready' });
   });
 
+  it("a map's whole item targets its parent, is last, never inherited and hides once used", async () => {
+    const { demo } = setup({
+      't/m/node.md': NODE('M?', at(10), [...own('P1', 'P2'), WHOLE('W')]),
+      't/m/p/node.md': NODE('P1', at(11)),
+      't/a/n/node.md': NODE('N?', at(12), [...own('Q1', 'Q2'), WHOLE('W2')]),
+    });
+    const view = async (id: string) => (await demo.api.getSuggestions('t', id)).suggestions;
+    expect(await view('m')).toEqual([
+      { text: 'P2', target: 'm', up: 0 },
+      { text: 'W', target: '', up: 1, kind: 'whole' },
+    ]);
+    expect(await view('m/p')).toEqual([{ text: 'P2', target: 'm', up: 1 }]);
+    expect(await view('a/n')).toEqual([
+      { text: 'Q1', target: 'a/n', up: 0 },
+      { text: 'Q2', target: 'a/n', up: 0 },
+      { text: 'W2', target: 'a', up: 1, kind: 'whole' },
+    ]);
+    demo.vfs.transaction(() => demo.vfs.writeText('t/w/node.md', NODE('W', at(13))));
+    expect(await view('m')).toEqual([{ text: 'P2', target: 'm', up: 0 }]);
+    await demo.api.deleteNodes('t', ['w']);
+    expect((await view('m')).at(-1)).toEqual({ text: 'W', target: '', up: 1, kind: 'whole' });
+  });
+
+  it('the whole item follows a move', async () => {
+    const { demo } = setup({
+      't/a/n/node.md': NODE('N?', at(12), [...own('Q1', 'Q2'), WHOLE('W2')]),
+    });
+    const whole = async (id: string) =>
+      (await demo.api.getSuggestions('t', id)).suggestions.find((item) => item.kind);
+    await demo.api.moveNodes('t', ['a/n'], 'c');
+    expect(await whole('c/n')).toEqual({ text: 'W2', target: 'c', up: 1, kind: 'whole' });
+    await demo.api.moveNodes('t', ['c/n'], '');
+    expect(await whole('n')).toEqual({ text: 'W2', target: '', up: 1, kind: 'whole' });
+  });
+
+  it('an unknown kind is never shown', async () => {
+    const raw = NODE('U?', at(10)).replace(
+      'model: claude-opus-5-5\n',
+      'model: claude-opus-5-5\nsuggestions: [{"text":"X","up":0,"kind":"future"},{"text":"Y","up":0}]\n',
+    );
+    const { demo } = setup({ 't/u/node.md': raw });
+    expect((await demo.api.getSuggestions('t', 'u')).suggestions).toEqual([
+      { text: 'Y', target: 'u', up: 0 },
+    ]);
+  });
+
   it('never conflicts: reads while a question of the tree streams', async () => {
     const { demo } = setup({ 't/n/node.md': NODE('N?', at(10), own('Next?')) });
     await demo.api.startQuestion('t', { parentId: 'c', text: 'Busy?', context: main });
@@ -223,6 +281,14 @@ describe('suggestions: candidates offered to the answering agent', () => {
     expect(script.calls[0]?.openSuggestions).toEqual(['C']);
   });
 
+  it('never offers the whole item', async () => {
+    const { demo, script } = setup({
+      't/m/node.md': NODE('M?', at(10), [...own('P1', 'P2'), WHOLE('W')]),
+    });
+    await ask(demo, 'm', 'Other?');
+    expect(script.calls[0]?.openSuggestions).toEqual(['P1', 'P2']);
+  });
+
   it('a top-level question gets no open suggestions', async () => {
     const { demo, script } = setup({ 't/n/node.md': NODE('N?', at(10), own('Next?')) });
     await ask(demo, '', 'Top?');
@@ -244,20 +310,65 @@ describe('default block simulator', () => {
     return seed / 2_147_483_648;
   };
 
-  it('plan-like questions get three steps, then every open suggestion', () => {
-    expect(simulateSuggestionBlock(() => 0.5)(input('Make a plan for ownership'))).toEqual([
-      "Let's start with step 1 of ownership",
-      "Let's go to step 2 of ownership",
-      "Let's go to step 3 of ownership",
+  it('big-topic questions get every part, then the open suggestions, then one whole item', () => {
+    const expected = [
+      'Explain part 1 of ownership',
+      'Explain part 2 of ownership',
+      'Explain part 3 of ownership',
+      'B',
+      'C',
+      wholeItem('Explain all of ownership in one answer, without splitting it'),
+    ];
+    for (const r of [0, 0.1, 0.45, 0.5, 0.99]) {
+      expect(simulateSuggestionBlock(() => r)(input('Make a plan for ownership'))).toEqual(
+        expected,
+      );
+    }
+  });
+
+  it('a part question keeps exactly the open suggestions; none → no block', () => {
+    const part = 'Explain part 1 of ownership';
+    expect(simulateSuggestionBlock(() => 0.5)(input(part))).toEqual(['B', 'C']);
+    expect(simulateSuggestionBlock(() => 0.5)(input(part, []))).toBeUndefined();
+    // A part whose topic names a chapter is not split again.
+    expect(simulateSuggestionBlock(() => 0.5)(input('Explain part 2 of chapter 4'))).toEqual([
       'B',
       'C',
     ]);
   });
 
-  it('a step question keeps exactly the open suggestions; none → no block', () => {
-    const step = "Let's start with step 1 of ownership";
-    expect(simulateSuggestionBlock(() => 0.5)(input(step))).toEqual(['B', 'C']);
-    expect(simulateSuggestionBlock(() => 0.5)(input(step, []))).toBeUndefined();
+  it('a request for everything in one answer is never split', () => {
+    const simulate = simulateSuggestionBlock(() => 0.5);
+    const whole = simulate(input(wholeText('chapter 4')));
+    expect(whole).toEqual([
+      'Give me a short exercise on chapter 4',
+      'How does chapter 4 work under the hood?',
+      'B',
+      'C',
+    ]);
+    const atOnce = simulate(input('Make a plan for ownership, all at once')) ?? [];
+    expect(atOnce.slice(-2)).toEqual(['B', 'C']);
+    for (const item of [...(whole ?? []), ...atOnce]) {
+      expect(parseBlockItem(item).kind).toBeUndefined();
+    }
+  });
+
+  it('splitParts: the own regular items of a list with a whole item', () => {
+    const list: StoredSuggestion[] = [...own('P1', 'P2'), { text: 'K', up: 1 }, WHOLE('W')];
+    expect(splitParts(list)).toEqual(['P1', 'P2']);
+    expect(splitParts(own('P1', 'P2'))).toBeUndefined();
+    expect(splitParts([])).toBeUndefined();
+  });
+
+  it('mapAnswer: the "too big" sentence and the numbered parts, nothing else', () => {
+    const answer = mapAnswer(['Explain part 1 of x', 'Explain part 2 of x']);
+    expect(answer.startsWith('This topic is too big for one answer')).toBe(true);
+    const first = answer.indexOf('1. Part 1 of x');
+    expect(first).toBeGreaterThan(0);
+    expect(answer.indexOf('2. Part 2 of x')).toBeGreaterThan(first);
+    expect(answer).not.toContain('<!--');
+    expect(answer).not.toContain('```');
+    expect(splitSuggestionBlock(answer).items).toBeUndefined();
   });
 
   it('often no block, sometimes the marker alone, else templates plus open suggestions', () => {
@@ -284,6 +395,8 @@ describe('default block simulator', () => {
     expect(suggestionTopic(question)).toBe('How exactly do lifetimes and borrowing');
     expect(suggestionTopic('')).toBe('these files');
     expect(suggestionTopic('Attached files: a.png')).toBe('these files');
+    expect(suggestionTopic('Explain part 1 of ownership')).toBe('part 1 of ownership');
+    expect(suggestionTopic(wholeText('ownership'))).toBe('ownership');
     expect(simulateSuggestionBlock(() => 0.5)(input('', []))).toContain(
       'Give me a short exercise on these files',
     );

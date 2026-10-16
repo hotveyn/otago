@@ -1,6 +1,8 @@
 // Disk side of suggestions: "used" scans, resolved views (GET) and the candidates offered to
-// the answering agent. Contract: .claude/features/inline-suggestions/contracts/. Suggestions
-// are written only by `createNode` at the commit; nothing here writes.
+// the answering agent. Contract: .claude/features/inline-suggestions/contracts/ and
+// .claude/features/topic-split-v2/contracts/ ("whole" items target the map's parent, `""` =
+// top-level nodes). Suggestions are written only by `createNode` at the commit; nothing here
+// writes.
 import { InvalidInputError, NotFoundError } from '../errors.js';
 import { isErrno } from './fs-utils.js';
 import { type ChainNode, liveChildEntries, readChain } from './nodes.js';

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   finalizeSuggestions,
+  MIN_SPLIT_PARTS,
   type NodeFile,
   parseNodeFile,
   parseStoredSuggestions,
@@ -15,6 +16,7 @@ import {
   suggestionKey,
   suggestionsLine,
   suggestionTargets,
+  wholeItem,
 } from '../src/storage/index.js';
 import { graphemes } from '../src/text.js';
 
@@ -107,7 +109,7 @@ describe('parseStoredSuggestions', () => {
     expect(parseStoredSuggestions([])).toEqual([]);
     expect(
       parseStoredSuggestions([
-        { text: '  a\nb ', up: 0, kind: 'extra' },
+        { text: '  a\nb ', up: 0, extra: 'x' },
         { text: '', up: 0 },
         { text: 5, up: 0 },
         { text: 'neg', up: -1 },
@@ -121,6 +123,40 @@ describe('parseStoredSuggestions', () => {
     ).toEqual([
       { text: 'a b', up: 0 },
       { text: 'ok', up: 2 },
+    ]);
+  });
+});
+
+describe('parseStoredSuggestions: kind', () => {
+  it('keeps a whole item with up 1', () => {
+    expect(parseStoredSuggestions([{ text: 'W', up: 1, kind: 'whole' }])).toEqual([
+      { text: 'W', up: 1, kind: 'whole' },
+    ]);
+  });
+
+  it('drops a whole item with any other up', () => {
+    expect(
+      parseStoredSuggestions([
+        { text: 'W0', up: 0, kind: 'whole' },
+        { text: 'W2', up: 2, kind: 'whole' },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('drops unknown kinds; kind undefined is a regular item; other keys are ignored', () => {
+    expect(
+      parseStoredSuggestions([
+        { text: 'extra', up: 0, kind: 'extra' },
+        { text: 'five', up: 1, kind: 5 },
+        { text: 'null', up: 1, kind: null },
+        { text: 'undef', up: 0, kind: undefined },
+        { text: 'other', up: 1, other: 'x' },
+        { text: 'W', up: 1, kind: 'whole', other: true },
+      ]),
+    ).toEqual([
+      { text: 'undef', up: 0 },
+      { text: 'other', up: 1 },
+      { text: 'W', up: 1, kind: 'whole' },
     ]);
   });
 });
@@ -141,6 +177,31 @@ describe('suggestionsLine', () => {
   it('writes only text and up', () => {
     const items = [{ text: 'a', up: 1, extra: true }] as unknown as { text: string; up: number }[];
     expect(suggestionsLine(items)).toBe('suggestions: [{"text":"a","up":1}]');
+  });
+
+  it('writes the kind of a whole item last; a list without kinds is unchanged', () => {
+    expect(
+      suggestionsLine([
+        { text: 'A', up: 0 },
+        { text: 'W', up: 1, kind: 'whole' },
+      ]),
+    ).toBe('suggestions: [{"text":"A","up":0},{"text":"W","up":1,"kind":"whole"}]');
+    const extra = [{ text: 'W', up: 1, kind: 'whole', extra: true }] as unknown as Parameters<
+      typeof suggestionsLine
+    >[0];
+    expect(suggestionsLine(extra)).toBe('suggestions: [{"text":"W","up":1,"kind":"whole"}]');
+    expect(suggestionsLine([{ text: 'A', up: 0 }])).toBe('suggestions: [{"text":"A","up":0}]');
+  });
+
+  it('round-trips a whole item through the node.md parser', () => {
+    const items = [
+      { text: 'Part one', up: 0 },
+      { text: 'Part two', up: 0 },
+      { text: 'Объясни главу 4 целиком', up: 1, kind: 'whole' as const },
+    ];
+    const text = serializeNodeFile({ ...base, suggestions: items });
+    expect(text).toContain('{"text":"Объясни главу 4 целиком","up":1,"kind":"whole"}]');
+    expect(parseNodeFile(text)).toEqual({ ...base, suggestions: items });
   });
 
   it('round-trips through the node.md parser', () => {
@@ -546,5 +607,166 @@ describe('finalizeSuggestions', () => {
         askedKeys: new Set(['Глава 2']),
       }),
     ).toEqual([]);
+  });
+});
+
+describe('whole items', () => {
+  const none = new Set<string>();
+  const ctx = { depth: 1, askedKeys: none };
+  const whole = (text: string) => ({ text, up: 1, kind: 'whole' as const });
+  const own = (text: string) => ({ text, up: 0 });
+
+  describe('finalizeSuggestions', () => {
+    it('stores the parts as own items and the whole item last', () => {
+      expect(MIN_SPLIT_PARTS).toBe(2);
+      expect(finalizeSuggestions(['A', 'B', wholeItem('W')], [], ctx)).toEqual([
+        own('A'),
+        own('B'),
+        whole('W'),
+      ]);
+      expect(finalizeSuggestions([wholeItem('W'), 'A', 'B'], [], ctx)).toEqual([
+        own('A'),
+        own('B'),
+        whole('W'),
+      ]);
+    });
+
+    it('drops the whole item without at least two own parts', () => {
+      expect(finalizeSuggestions(['A', wholeItem('W')], [], ctx)).toEqual([own('A')]);
+      expect(finalizeSuggestions([wholeItem('W')], [], ctx)).toEqual([]);
+    });
+
+    it('order: own, kept, whole; kept candidates are not parts', () => {
+      const candidates = [
+        { text: 'K1', source: 'p', origin: 0 },
+        { text: 'K2', source: 'p', origin: 0 },
+      ];
+      const deep = { depth: 1, askedKeys: none };
+      expect(finalizeSuggestions(['K1', 'A', wholeItem('W'), 'B'], candidates, deep)).toEqual([
+        own('A'),
+        own('B'),
+        { text: 'K1', up: 1 },
+        whole('W'),
+      ]);
+      expect(finalizeSuggestions(['A', 'K1', 'K2', wholeItem('W')], candidates, deep)).toEqual([
+        own('A'),
+        { text: 'K1', up: 1 },
+        { text: 'K2', up: 1 },
+      ]);
+    });
+
+    it('two whole items: the first wins', () => {
+      expect(finalizeSuggestions(['A', wholeItem('W1'), 'B', wholeItem('W2')], [], ctx)).toEqual([
+        own('A'),
+        own('B'),
+        whole('W1'),
+      ]);
+    });
+
+    it('a whole text equal to a candidate is not a keep; dedupe still applies', () => {
+      const candidates = [{ text: 'W', source: 'p', origin: 0 }];
+      expect(finalizeSuggestions(['A', 'B', wholeItem('W')], candidates, ctx)).toEqual([
+        own('A'),
+        own('B'),
+        whole('W'),
+      ]);
+      expect(finalizeSuggestions(['A', 'B', 'C', wholeItem(' C ')], [], ctx)).toEqual([
+        own('A'),
+        own('B'),
+        own('C'),
+      ]);
+    });
+
+    it('drops an asked or empty whole item', () => {
+      expect(
+        finalizeSuggestions(['A', 'B', wholeItem('W')], [], {
+          depth: 1,
+          askedKeys: new Set(['W']),
+        }),
+      ).toEqual([own('A'), own('B')]);
+      expect(
+        finalizeSuggestions(['A', 'B', wholeItem(''), '<!-- otago:whole -->'], [], ctx),
+      ).toEqual([own('A'), own('B')]);
+    });
+  });
+
+  describe('resolveSuggestions', () => {
+    const map = [own('A'), own('B'), whole('W')];
+
+    it('a top-level map: whole targets the root, last', () => {
+      expect(resolveSuggestions(chainOf(['map', map]), noUsed)).toEqual([
+        { text: 'A', target: 'map', up: 0 },
+        { text: 'B', target: 'map', up: 0 },
+        { text: 'W', target: '', up: 1, kind: 'whole' },
+      ]);
+    });
+
+    it('a nested map: whole targets its parent, with no owner validation', () => {
+      // The parent has no list: still shown.
+      expect(resolveSuggestions(chainOf(['p', undefined], ['p/map', map]), noUsed)).toContainEqual({
+        text: 'W',
+        target: 'p',
+        up: 1,
+        kind: 'whole',
+      });
+      expect(resolveSuggestions(chainOf(['p', [own('X')]], ['p/map', map]), noUsed).at(-1)).toEqual(
+        { text: 'W', target: 'p', up: 1, kind: 'whole' },
+      );
+    });
+
+    it('a child without a list never shows the whole item', () => {
+      expect(resolveSuggestions(chainOf(['map', map], ['map/a', undefined, 'A']), noUsed)).toEqual([
+        { text: 'B', target: 'map', up: 1 },
+      ]);
+    });
+
+    it('used under the target hides it', () => {
+      expect(
+        resolveSuggestions(chainOf(['map', map]), new Map([['', new Set(['W'])]])),
+      ).toHaveLength(2);
+      expect(
+        resolveSuggestions(
+          chainOf(['p', undefined], ['p/map', map]),
+          new Map([['p', new Set(['W'])]]),
+        ),
+      ).toHaveLength(2);
+      // Used under the map itself does not hide it.
+      expect(
+        resolveSuggestions(chainOf(['map', map]), new Map([['map', new Set(['W'])]])),
+      ).toHaveLength(3);
+    });
+
+    it('two stored whole items: only the first is shown', () => {
+      expect(
+        resolveSuggestions(chainOf(['map', [...map, whole('W2')]]), noUsed).filter(
+          (item) => item.kind === 'whole',
+        ),
+      ).toEqual([{ text: 'W', target: '', up: 1, kind: 'whole' }]);
+    });
+  });
+
+  describe('suggestionTargets', () => {
+    const map = [own('A'), own('B'), whole('W')];
+
+    it("includes the map's parent for its own list only", () => {
+      expect(suggestionTargets(chainOf(['map', map]))).toEqual(['map', '']);
+      expect(suggestionTargets(chainOf(['p', undefined], ['p/map', map]))).toEqual(['p/map', 'p']);
+      expect(suggestionTargets(chainOf(['map', map], ['map/a', undefined]))).toEqual(['map']);
+    });
+  });
+
+  describe('pickCandidates', () => {
+    it('never offers the whole item', () => {
+      const map = [own('A'), own('B'), whole('W')];
+      expect(pickCandidates(chainOf(['map', map]), noUsed, new Set())).toEqual([
+        { text: 'A', source: 'map', origin: 0 },
+        { text: 'B', source: 'map', origin: 0 },
+      ]);
+      expect(
+        pickCandidates(chainOf(['p', undefined], ['p/map', map]), noUsed, new Set()).map(
+          (item) => item.text,
+        ),
+      ).toEqual(['A', 'B']);
+    });
   });
 });
