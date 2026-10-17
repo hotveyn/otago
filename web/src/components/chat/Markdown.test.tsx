@@ -161,6 +161,10 @@ describe('Markdown citations', () => {
     expect(html).not.toContain('cite-file');
   });
 
+  it('renders a malformed cite href as a plain link instead of throwing', () => {
+    expect(render('See [1](#cite-%zz).')).toContain('<a href="#cite-%zz">1</a>');
+  });
+
   it('routes inline file links through the same actions', () => {
     const pdf = render('See [x](sources/a.pdf:3).');
     expect(pdf).toContain(

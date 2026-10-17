@@ -297,7 +297,7 @@ function InlineRef({ target, children }: { target: FileTarget; children?: ReactN
 function Anchor({ href = '', children }: { href?: string; children?: ReactNode }) {
   const { citations } = useContext(RenderContext);
   if (href.startsWith(CITE_HREF_PREFIX)) {
-    const citation = citations.get(decodeURIComponent(href.slice(CITE_HREF_PREFIX.length)));
+    const citation = citations.get(safeDecode(href.slice(CITE_HREF_PREFIX.length)));
     if (citation) return <CitationChip citation={citation} />;
   }
   const attachment = parseAttachmentHref(href);

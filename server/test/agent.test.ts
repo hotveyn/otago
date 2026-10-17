@@ -210,7 +210,8 @@ describe('prompt building', () => {
     expect(options.model).toBe('claude-sonnet-5');
     expect(options.tools).toEqual(['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch']);
     expect(options.tools).toEqual(ALLOWED_TOOLS);
-    expect(options.allowedTools).toEqual([...ALLOWED_TOOLS, SAVE_ATTACHMENT_TOOL_ID]);
+    // Pre-approving file tools would let them read outside the tree folder.
+    expect(options.allowedTools).toEqual(['WebSearch', 'WebFetch', SAVE_ATTACHMENT_TOOL_ID]);
     expect(SAVE_ATTACHMENT_TOOL_ID).toBe('mcp__otago__save_attachment');
     expect(options.disallowedTools).toEqual(DENIED_TOOLS);
     expect(options.disallowedTools).toEqual(

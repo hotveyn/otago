@@ -46,7 +46,9 @@ export function buildAskOptions(
     model: input.model,
     systemPrompt: buildSystemPrompt(input.instructions),
     tools: ALLOWED_TOOLS,
-    allowedTools: [...ALLOWED_TOOLS, SAVE_ATTACHMENT_TOOL_ID],
+    // Read/Grep/Glob stay out: unlisted, the SDK allows them inside `cwd` only and `dontAsk`
+    // refuses every other path (e.g. `~/.ssh`), so prompt injection cannot read the disk.
+    allowedTools: ['WebSearch', 'WebFetch', SAVE_ATTACHMENT_TOOL_ID],
     disallowedTools: DENIED_TOOLS,
     // Soft-deleted nodes (`*.deleted-*` folders) stay hidden from the agent, and so do the
     // staging folders of other answers in progress (its own stays readable).
